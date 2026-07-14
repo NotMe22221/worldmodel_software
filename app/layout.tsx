@@ -6,7 +6,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://worldmodel-software.openai.site"),
+  metadataBase: new URL("https://worldmodel-software.karthikuppala.chatgpt.site"),
   title: "WorldModel for Software — Failure simulator",
   description: "Map, simulate, repair, and verify software failures before production.",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
