@@ -32,6 +32,9 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Durable scenario fingerprints, replay evidence, metered simulation minutes, and tenant-isolated report downloads
 - GitHub App install/OAuth ownership validation, installation-scoped repository sync, and repository import
 - Stripe-hosted subscription checkout with signed, idempotent entitlement webhooks
+- Append-only tenant audit events with administrator-only spreadsheet-safe CSV export
+- Durable support cases visible to the requester and workspace administrators
+- Public trust, security, privacy, pilot terms, and support disclosures that distinguish implemented controls from planned certifications
 - Responsive product and sub-three-minute demonstration path
 
 ## Local use

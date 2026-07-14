@@ -1,3 +1,5 @@
+import { recordAudit } from "./audit";
+
 async function getD1() {
   const { env } = await import("cloudflare:workers");
   if (!env.DB) throw new Error("D1 binding DB is unavailable");
@@ -49,6 +51,10 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS billing_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS github_installations_workspace_idx ON github_installations(workspace_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS github_repositories_workspace_idx ON github_repositories(workspace_id)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), actor_email TEXT NOT NULL, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT, summary TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS support_cases (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), created_by TEXT NOT NULL, subject TEXT NOT NULL, category TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'open', body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS audit_logs_workspace_created_idx ON audit_logs(workspace_id, created_at)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS support_cases_workspace_created_idx ON support_cases(workspace_id, created_at)"),
   ]);
   await ensureRunEvidenceColumns(db);
 }
@@ -85,7 +91,10 @@ export async function getSaasSnapshot(email: string) {
   const githubInstallations = await db.prepare("SELECT installation_id, account_login, account_type, repository_selection, status, created_at AS connected_at FROM github_installations WHERE workspace_id = ? ORDER BY created_at DESC").bind(workspace.id).all();
   const githubRepositories = await db.prepare("SELECT repository_id, installation_id, full_name, default_branch, is_private, selected, synced_at FROM github_repositories WHERE workspace_id = ? ORDER BY selected DESC, full_name LIMIT 100").bind(workspace.id).all();
   const subscription = await db.prepare("SELECT status, plan, current_period_end, updated_at FROM subscriptions WHERE workspace_id = ?").bind(workspace.id).first();
-  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription };
+  const auditAccess = workspace.membership_role === "owner" || workspace.membership_role === "admin";
+  const auditLogs = auditAccess ? await db.prepare("SELECT id, actor_email, action, target_type, target_id, summary, created_at FROM audit_logs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : { results: [] };
+  const supportCases = auditAccess ? await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? AND lower(created_by) = lower(?) ORDER BY created_at DESC LIMIT 50").bind(workspace.id, email).all();
+  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results };
 }
 
 export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>, allowed: string[]) {
@@ -99,6 +108,7 @@ export async function createProject(email: string, input: { name: string; reposi
   const id = `proj_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const db = await getD1();
   await db.prepare("INSERT INTO projects (id, workspace_id, name, repository, branch, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(id, snapshot.workspace.id, input.name, input.repository, input.branch, "scanning", 0, 0).run();
+  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "project.created", targetType: "project", targetId: id, summary: `Connected ${input.repository}`, metadata: { branch: input.branch } });
   return db.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
 }
 
@@ -107,6 +117,7 @@ export async function updateWorkspace(email: string, name: string) {
   requireRole(snapshot, ["owner", "admin"]);
   const db = await getD1();
   await db.prepare("UPDATE workspaces SET name = ? WHERE id = ?").bind(name, snapshot.workspace.id).run();
+  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "workspace.updated", targetType: "workspace", targetId: String(snapshot.workspace.id), summary: "Updated workspace name" });
   return db.prepare("SELECT * FROM workspaces WHERE id = ?").bind(snapshot.workspace.id).first();
 }
 
@@ -115,6 +126,7 @@ export async function inviteWorkspaceMember(email: string, memberEmail: string, 
   requireRole(snapshot, ["owner", "admin"]);
   const db = await getD1();
   await db.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, email, role) VALUES (?, ?, ?)").bind(snapshot.workspace.id, memberEmail, role).run();
+  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "member.invited", targetType: "member", targetId: memberEmail, summary: `Added ${memberEmail} as ${role}`, metadata: { role } });
   return db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? AND email = ?").bind(snapshot.workspace.id, memberEmail).first();
 }
 
@@ -133,6 +145,7 @@ export async function createSimulationRun(email: string, scenarioKey: ScenarioKe
     db.prepare("INSERT INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, scenario_key, scenario_fingerprint, seed, before_error_rate, before_latency_ms, before_journey_success) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, project.id, profile.label, "completed", profile.before.score, null, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess, 120, scenarioKey, profile.fingerprint, seed, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess),
     db.prepare("UPDATE workspaces SET simulation_minutes = simulation_minutes + 2 WHERE id = ?").bind(workspace.id),
   ]);
+  await recordAudit({ workspaceId: workspace.id, actorEmail: email, action: "simulation.completed", targetType: "simulation_run", targetId: id, summary: `${profile.label} exposed a release risk`, metadata: { scenario: scenarioKey, fingerprint: profile.fingerprint, beforeScore: profile.before.score } });
   return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(id).first();
 }
 
@@ -148,6 +161,7 @@ export async function verifySimulationRun(email: string, runId: string) {
   const profile = scenarioProfiles[key];
   await db.prepare("UPDATE simulation_runs SET status = 'verified', after_score = ?, error_rate = ?, latency_ms = ?, journey_success = ?, after_error_rate = ?, after_latency_ms = ?, after_journey_success = ?, verified_at = CURRENT_TIMESTAMP WHERE id = ?").bind(profile.after.score, profile.after.errorRate, profile.after.latencyMs, profile.after.journeySuccess, profile.after.errorRate, profile.after.latencyMs, profile.after.journeySuccess, runId).run();
   await db.prepare("UPDATE projects SET resilience_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT project_id FROM simulation_runs WHERE id = ?)").bind(profile.after.score, runId).run();
+  await recordAudit({ workspaceId: workspace.id, actorEmail: email, action: "simulation.verified", targetType: "simulation_run", targetId: runId, summary: `${profile.label} repair passed identical replay`, metadata: { scenario: key, afterScore: profile.after.score } });
   return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(runId).first();
 }
 

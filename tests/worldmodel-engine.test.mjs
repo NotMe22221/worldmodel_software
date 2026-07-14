@@ -6,6 +6,7 @@ import { formatVerificationReport } from "../worldmodel/verification-report.mjs"
 import { createHmac } from "node:crypto";
 import { verifyStripeSignature } from "../server/stripe.ts";
 import { authorizedInstallation } from "../server/github.ts";
+import { safeCsvCell } from "../worldmodel/safe-csv.mjs";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(await readFile(new URL("../sample-app/worldmodel.manifest.json", import.meta.url)));
@@ -62,4 +63,9 @@ test("GitHub connection accepts only an installation visible to the authorized u
   const installations = [{ id: 42, account: { login: "northstar", type: "Organization" }, repository_selection: "selected", permissions: { contents: "read" } }];
   assert.equal(authorizedInstallation(installations, "42")?.account.login, "northstar");
   assert.equal(authorizedInstallation(installations, "999"), null);
+});
+
+test("audit CSV export neutralizes spreadsheet formulas and escapes quotes", () => {
+  assert.equal(safeCsvCell('=HYPERLINK("https://evil.test")'), '"\'=HYPERLINK(""https://evil.test"")"');
+  assert.equal(safeCsvCell('review "ready"'), '"review ""ready"""');
 });

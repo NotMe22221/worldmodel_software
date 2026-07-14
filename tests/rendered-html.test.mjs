@@ -32,3 +32,18 @@ test("server-renders the executable checkout journey fixture", async () => {
   assert.match(html, /Field Notes Pack/);
   assert.match(html, /Add to cart/);
 });
+
+test("server-renders public trust, privacy, terms, security, and support disclosures", async () => {
+  const expectations = new Map([
+    ["/trust", /Evidence over promises/], ["/privacy", /Product data, explained plainly/],
+    ["/terms", /Terms for controlled evaluation/], ["/security", /Secure defaults, reviewable evidence/],
+    ["/support", /Help tied to the evidence/],
+  ]);
+  for (const [path, pattern] of expectations) {
+    const response = await render(path);
+    assert.equal(response.status, 200, path);
+    const html = await response.text();
+    assert.match(html, pattern, path);
+    assert.match(html, /Pre-commercial pilot/, path);
+  }
+});

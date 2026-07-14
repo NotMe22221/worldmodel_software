@@ -107,3 +107,28 @@ export const billingEvents = sqliteTable("billing_events", {
   eventType: text("event_type").notNull(),
   processedAt: text("processed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const auditLogs = sqliteTable("audit_logs", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  actorEmail: text("actor_email").notNull(),
+  action: text("action").notNull(),
+  targetType: text("target_type").notNull(),
+  targetId: text("target_id"),
+  summary: text("summary").notNull(),
+  metadataJson: text("metadata_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const supportCases = sqliteTable("support_cases", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  createdBy: text("created_by").notNull(),
+  subject: text("subject").notNull(),
+  category: text("category").notNull(),
+  priority: text("priority").notNull().default("normal"),
+  status: text("status").notNull().default("open"),
+  body: text("body").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

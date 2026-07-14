@@ -1,5 +1,6 @@
 import { createProject, ensureSaasSchema, getSaasSnapshot, requireRole } from "./saas";
 import type { GithubInstallation, GithubRepository } from "../server/github";
+import { recordAudit } from "./audit";
 
 async function getD1() {
   const { env } = await import("cloudflare:workers");
@@ -42,6 +43,7 @@ export async function completeGithubConnection(email: string, state: string, ins
     db.prepare("UPDATE integration_states SET used_at = CURRENT_TIMESTAMP WHERE token = ? AND used_at IS NULL").bind(state),
   ];
   await db.batch(statements);
+  await recordAudit({ workspaceId: pending.workspace_id, actorEmail: email, action: "github.connected", targetType: "github_installation", targetId: String(installation.id), summary: `Connected GitHub account ${installation.account.login}`, metadata: { repositoryCount: repositories.length, accountType: installation.account.type } });
   return { account: installation.account.login, repositoryCount: repositories.length };
 }
 
@@ -56,6 +58,7 @@ export async function importGithubRepository(email: string, repositoryId: string
   const name = repository.full_name.split("/").pop()?.replaceAll("-", " ") || repository.full_name;
   const project = await createProject(email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch });
   await db.prepare("UPDATE github_repositories SET selected = 1 WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).run();
+  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "repository.imported", targetType: "github_repository", targetId: repositoryId, summary: `Imported ${repository.full_name} from GitHub` });
   return project;
 }
 
@@ -95,5 +98,6 @@ export async function processStripeEvent(event: StripeEvent) {
   const limit = active ? plan === "starter" ? 150 : plan === "business" ? 2000 : 500 : 50;
   await db.prepare("UPDATE workspaces SET plan = ?, monthly_limit = ? WHERE id = ?").bind(active ? plan : "free", limit, workspaceId).run();
   await db.prepare("INSERT OR IGNORE INTO billing_events (event_id, event_type) VALUES (?, ?)").bind(event.id, event.type).run();
+  await recordAudit({ workspaceId, actorEmail: "stripe@system.worldmodel", action: "subscription.updated", targetType: "subscription", targetId: subscriptionId, summary: `Subscription status changed to ${status}`, metadata: { plan, eventType: event.type } });
   return { duplicate: false, workspaceId, status };
 }
