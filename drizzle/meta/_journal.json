@@ -50,6 +50,13 @@
       "when": 1783995769898,
       "tag": "0006_supreme_sinister_six",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1783996672819,
+      "tag": "0007_mixed_power_pack",
+      "breakpoints": true
     }
   ]
 }

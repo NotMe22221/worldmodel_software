@@ -60,6 +60,37 @@ export const workspaceMembers = sqliteTable("workspace_members", {
   uniqueIndex("workspace_members_workspace_email_idx").on(table.workspaceId, table.email),
 ]);
 
+export const workspaceInvitations = sqliteTable("workspace_invitations", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  email: text("email").notNull(),
+  role: text("role").notNull().default("member"),
+  tokenHash: text("token_hash").notNull(),
+  status: text("status").notNull().default("pending"),
+  invitedBy: text("invited_by").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  acceptedAt: text("accepted_at"),
+  revokedAt: text("revoked_at"),
+}, (table) => [
+  uniqueIndex("workspace_invitations_token_hash_idx").on(table.tokenHash),
+]);
+
+export const invitationRateBuckets = sqliteTable("invitation_rate_buckets", {
+  id: text("id").primaryKey(),
+  subjectHash: text("subject_hash").notNull(),
+  bucketStart: text("bucket_start").notNull(),
+  requestCount: integer("request_count").notNull().default(0),
+}, (table) => [
+  uniqueIndex("invitation_rate_subject_start_idx").on(table.subjectHash, table.bucketStart),
+]);
+
+export const userPreferences = sqliteTable("user_preferences", {
+  email: text("email").primaryKey(),
+  activeWorkspaceId: text("active_workspace_id").notNull().references(() => workspaces.id),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const integrationStates = sqliteTable("integration_states", {
   token: text("token").primaryKey(),
   workspaceId: text("workspace_id").notNull().references(() => workspaces.id),

@@ -33,6 +33,14 @@ test("server-renders the executable checkout journey fixture", async () => {
   assert.match(html, /Add to cart/);
 });
 
+test("server-renders the identity-bound invitation acceptance route", async () => {
+  const response = await render("/invite");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /WorldModel/);
+  assert.match(html, /CHECKING INVITATION/);
+});
+
 test("server-renders public trust, privacy, terms, security, and support disclosures", async () => {
   const expectations = new Map([
     ["/trust", /Evidence over promises/], ["/privacy", /Product data, explained plainly/],

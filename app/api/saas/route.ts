@@ -1,5 +1,6 @@
-import { createProject, createSimulationRun, getSaasSnapshot, inviteWorkspaceMember, updateWorkspace, verifySimulationRun } from "../../../db/saas";
+import { createProject, createSimulationRun, getSaasSnapshot, switchWorkspace, updateWorkspace, verifySimulationRun } from "../../../db/saas";
 import { importGithubRepository } from "../../../db/business";
+import { createWorkspaceInvitation } from "../../../db/team";
 import { businessConfiguration } from "../../../server/runtime-config";
 import { launchReadiness } from "../../../server/readiness";
 
@@ -32,13 +33,18 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const email = identity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
-  let payload: { action?: string; name?: string; repository?: string; branch?: string; email?: string; role?: string; scenario?: string; projectId?: string; runId?: string; repositoryId?: string };
+  let payload: { action?: string; name?: string; repository?: string; branch?: string; email?: string; role?: string; scenario?: string; projectId?: string; runId?: string; repositoryId?: string; workspaceId?: string };
   try { payload = await request.json(); }
   catch { return Response.json({ error: "A valid JSON request body is required" }, { status: 400 }); }
   if (payload.action === "import-repository") {
     if (!payload.repositoryId) return Response.json({ error: "Choose a connected repository" }, { status: 400 });
     try { return Response.json({ project: await importGithubRepository(email, payload.repositoryId) }, { status: 201 }); }
     catch (error) { return failure(error, "Unable to import repository"); }
+  }
+  if (payload.action === "switch-workspace") {
+    if (!payload.workspaceId) return Response.json({ error: "Choose a workspace" }, { status: 400 });
+    try { return Response.json(await switchWorkspace(email, payload.workspaceId)); }
+    catch (error) { return failure(error, "Unable to switch workspace"); }
   }
   if (payload.action === "create-run") {
     const scenario = payload.scenario;
@@ -61,8 +67,8 @@ export async function POST(request: Request) {
     const memberEmail = payload.email?.trim().toLowerCase();
     const role = payload.role === "admin" || payload.role === "viewer" ? payload.role : "member";
     if (!memberEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(memberEmail)) return Response.json({ error: "A valid member email is required" }, { status: 400 });
-    try { return Response.json({ member: await inviteWorkspaceMember(email, memberEmail, role) }, { status: 201 }); }
-    catch (error) { return failure(error, "Unable to invite member"); }
+    try { return Response.json(await createWorkspaceInvitation(email, memberEmail, role), { status: 201 }); }
+    catch (error) { return failure(error, "Unable to create invitation"); }
   }
   const name = payload.name?.trim();
   const repository = payload.repository?.trim();

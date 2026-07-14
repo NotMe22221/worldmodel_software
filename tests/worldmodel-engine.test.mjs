@@ -10,6 +10,7 @@ import { safeCsvCell } from "../worldmodel/safe-csv.mjs";
 import { launchReadiness } from "../server/readiness.ts";
 import { digestApiToken, generateApiTokenMaterial } from "../worldmodel/api-key-security.mjs";
 import { resolveEntitlements, usagePeriod } from "../worldmodel/entitlements.mjs";
+import { digestInvitationSecret, generateInvitationSecret } from "../worldmodel/invitation-security.mjs";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(await readFile(new URL("../sample-app/worldmodel.manifest.json", import.meta.url)));
@@ -107,6 +108,16 @@ test("developer API credentials use one-time high-entropy material and irreversi
   const digest = await digestApiToken(first.token);
   assert.match(digest, /^[a-f0-9]{64}$/);
   assert.ok(!digest.includes(first.token));
+});
+
+test("workspace invitations use unique one-time secrets and irreversible stored digests", async () => {
+  const first = generateInvitationSecret("inv_securitytest");
+  const second = generateInvitationSecret("inv_securitytest");
+  assert.match(first, /^wmi_inv_securitytest_[a-f0-9]{64}$/);
+  assert.notEqual(first, second);
+  const digest = await digestInvitationSecret(first);
+  assert.match(digest, /^[a-f0-9]{64}$/);
+  assert.ok(!digest.includes(first));
 });
 
 test("commercial entitlements follow trial, paid, delinquent, and canceled lifecycle states", () => {

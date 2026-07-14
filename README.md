@@ -37,6 +37,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Hashed, revocable developer API keys with least-privilege scopes, durable rate limiting, and CI-oriented project/run endpoints
 - Durable 14-day trials, calendar-month usage rollover, Stripe-aware access states, and server-enforced project, seat, simulation, and API-key entitlements
 - Durable support cases visible to the requester and workspace administrators
+- Identity-bound, one-time team invitation links with hashed secrets, expiry, revocation, pending-seat accounting, workspace switching, role changes, removals, rate limiting, and audit evidence
 - Public trust, security, privacy, pilot terms, and support disclosures that distinguish implemented controls from planned certifications
 - Responsive product and sub-three-minute demonstration path
 

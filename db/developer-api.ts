@@ -65,7 +65,7 @@ export async function authenticateApiRequest(request: Request, requiredScope: Ap
   await ensureSaasSchema();
   const db = await getD1();
   const keyHash = await digestApiToken(token);
-  const key = await db.prepare("SELECT id, workspace_id, name, scopes_json FROM api_keys WHERE key_hash = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)").bind(keyHash).first<{ id: string; workspace_id: string; name: string; scopes_json: string }>();
+  const key = await db.prepare("SELECT id, workspace_id, name, scopes_json FROM api_keys WHERE key_hash = ? AND status = 'active' AND (expires_at IS NULL OR datetime(expires_at) > CURRENT_TIMESTAMP)").bind(keyHash).first<{ id: string; workspace_id: string; name: string; scopes_json: string }>();
   if (!key) throw new ApiAccessError("A valid API bearer token is required", 401, { "www-authenticate": "Bearer" });
   let scopes: ApiScope[];
   try { scopes = JSON.parse(key.scopes_json); }

@@ -42,7 +42,7 @@ export async function exportWorkspaceData(email: string) {
     db.prepare("SELECT stripe_customer_id, stripe_subscription_id, status, plan, current_period_end, updated_at FROM subscriptions WHERE workspace_id = ?").bind(workspaceId).first(),
     db.prepare("SELECT id, requested_by, scope, status, reason, execute_after, created_at, canceled_at, completed_at FROM data_deletion_requests WHERE workspace_id = ? ORDER BY created_at").bind(workspaceId).all(),
   ]);
-  return { exportVersion: 1, generatedAt, scope: "workspace", workspace: snapshot.workspace, entitlements: snapshot.entitlements, members: snapshot.members, projects: snapshot.projects, simulationRuns: snapshot.runs, githubInstallations: snapshot.githubInstallations, githubRepositories: snapshot.githubRepositories, subscription, supportCases: supportCases.results, auditEvents: auditEvents.results, launchChecks: snapshot.launchChecks, deletionRequests: deletionRequests.results, apiKeys: snapshot.apiKeys, apiUsage: snapshot.apiUsage };
+  return { exportVersion: 1, generatedAt, scope: "workspace", workspace: snapshot.workspace, entitlements: snapshot.entitlements, members: snapshot.members, pendingInvitations: snapshot.pendingInvitations, projects: snapshot.projects, simulationRuns: snapshot.runs, githubInstallations: snapshot.githubInstallations, githubRepositories: snapshot.githubRepositories, subscription, supportCases: supportCases.results, auditEvents: auditEvents.results, launchChecks: snapshot.launchChecks, deletionRequests: deletionRequests.results, apiKeys: snapshot.apiKeys, apiUsage: snapshot.apiUsage };
 }
 
 export async function requestWorkspaceDeletion(email: string, reason?: string) {

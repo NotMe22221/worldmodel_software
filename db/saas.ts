@@ -53,6 +53,12 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE INDEX IF NOT EXISTS projects_workspace_idx ON projects(workspace_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS runs_project_idx ON simulation_runs(project_id)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS workspace_members_workspace_email_idx ON workspace_members(workspace_id, email)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS workspace_invitations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), email TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', token_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', invited_by TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, accepted_at TEXT, revoked_at TEXT)"),
+    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS workspace_invitations_token_hash_idx ON workspace_invitations(token_hash)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS workspace_invitations_workspace_idx ON workspace_invitations(workspace_id, status, created_at)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS invitation_rate_buckets (id TEXT PRIMARY KEY, subject_hash TEXT NOT NULL, bucket_start TEXT NOT NULL, request_count INTEGER NOT NULL DEFAULT 0)"),
+    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS invitation_rate_subject_start_idx ON invitation_rate_buckets(subject_hash, bucket_start)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS user_preferences (email TEXT PRIMARY KEY, active_workspace_id TEXT NOT NULL REFERENCES workspaces(id), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS integration_states (token TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), purpose TEXT NOT NULL, installation_id TEXT, created_by TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)"),
     db.prepare("CREATE TABLE IF NOT EXISTS github_installations (installation_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), account_login TEXT NOT NULL, account_type TEXT NOT NULL, repository_selection TEXT NOT NULL, permissions_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', connected_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS github_repositories (repository_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL REFERENCES github_installations(installation_id), workspace_id TEXT NOT NULL REFERENCES workspaces(id), full_name TEXT NOT NULL, default_branch TEXT NOT NULL, is_private INTEGER NOT NULL DEFAULT 1, selected INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
@@ -102,7 +108,7 @@ export async function getSaasSnapshot(email: string) {
   await ensureSaasSchema();
   await seedWorkspace(email);
   const db = await getD1();
-  const workspace = await db.prepare("SELECT w.*, m.role AS membership_role FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE lower(m.email) = lower(?) ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'member' THEN 2 ELSE 3 END, w.created_at LIMIT 1").bind(email).first<{ id: string; membership_role: string } & Record<string, unknown>>();
+  const workspace = await db.prepare("SELECT w.*, m.role AS membership_role FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id LEFT JOIN user_preferences pref ON lower(pref.email) = lower(m.email) WHERE lower(m.email) = lower(?) ORDER BY CASE WHEN w.id = pref.active_workspace_id THEN 0 ELSE 1 END, CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'member' THEN 2 ELSE 3 END, w.created_at LIMIT 1").bind(email).first<{ id: string; membership_role: string } & Record<string, unknown>>();
   if (!workspace) throw new Error("Workspace not found");
   const period = usagePeriod();
   if (String(workspace.usage_period_start || "") !== period.start) {
@@ -113,6 +119,8 @@ export async function getSaasSnapshot(email: string) {
   const projects = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC").bind(workspace.id).all();
   const runs = await db.prepare("SELECT r.*, p.name AS project_name FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 20").bind(workspace.id).all();
   const members = await db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? ORDER BY created_at").bind(workspace.id).all();
+  const availableWorkspaces = await db.prepare("SELECT w.id, w.name, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id WHERE lower(m.email) = lower(?) ORDER BY w.name").bind(email).all();
+  const pendingInvitations = (workspace.membership_role === "owner" || workspace.membership_role === "admin") ? await db.prepare("SELECT id, email, role, status, invited_by, expires_at, created_at, accepted_at, revoked_at FROM workspace_invitations WHERE workspace_id = ? AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP ORDER BY created_at DESC").bind(workspace.id).all() : { results: [] };
   const githubInstallations = await db.prepare("SELECT installation_id, account_login, account_type, repository_selection, status, created_at AS connected_at FROM github_installations WHERE workspace_id = ? ORDER BY created_at DESC").bind(workspace.id).all();
   const githubRepositories = await db.prepare("SELECT repository_id, installation_id, full_name, default_branch, is_private, selected, synced_at FROM github_repositories WHERE workspace_id = ? ORDER BY selected DESC, full_name LIMIT 100").bind(workspace.id).all();
   const subscription = await db.prepare("SELECT status, plan, current_period_end, updated_at FROM subscriptions WHERE workspace_id = ?").bind(workspace.id).first();
@@ -129,7 +137,7 @@ export async function getSaasSnapshot(email: string) {
   const deletionRequests = workspace.membership_role === "owner" ? await db.prepare("SELECT id, scope, status, reason, execute_after, created_at, canceled_at, completed_at FROM data_deletion_requests WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 10").bind(workspace.id).all() : { results: [] };
   const apiKeys = auditAccess ? await db.prepare("SELECT id, name, key_prefix, scopes_json, status, created_by, last_used_at, expires_at, created_at, revoked_at FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 20").bind(workspace.id).all() : { results: [] };
   const apiUsage = auditAccess ? await db.prepare("SELECT COALESCE(SUM(b.request_count), 0) AS requests_today FROM api_rate_buckets b JOIN api_keys k ON k.id = b.api_key_id WHERE k.workspace_id = ? AND b.bucket_start >= date('now')").bind(workspace.id).first() : { requests_today: 0 };
-  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, entitlements, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results, apiKeys: apiKeys.results, apiUsage };
+  return { workspace, availableWorkspaces: availableWorkspaces.results, projects: projects.results, runs: runs.results, members: members.results, pendingInvitations: pendingInvitations.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, entitlements, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results, apiKeys: apiKeys.results, apiUsage };
 }
 
 export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>, allowed: string[]) {
@@ -139,6 +147,15 @@ export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>
 
 export function requireWriteEntitlement(entitlements: { canWrite: boolean; message: string }) {
   if (!entitlements.canWrite) throw new Error(entitlements.message);
+}
+
+export async function switchWorkspace(email: string, workspaceId: string) {
+  await ensureSaasSchema();
+  const db = await getD1();
+  const membership = await db.prepare("SELECT role FROM workspace_members WHERE workspace_id = ? AND lower(email) = lower(?)").bind(workspaceId, email).first();
+  if (!membership) throw new Error("Workspace membership not found");
+  await db.prepare("INSERT INTO user_preferences (email, active_workspace_id) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET active_workspace_id = excluded.active_workspace_id, updated_at = CURRENT_TIMESTAMP").bind(email.toLowerCase(), workspaceId).run();
+  return { workspaceId };
 }
 
 export async function getWorkspaceEntitlements(workspaceId: string) {
@@ -178,18 +195,6 @@ export async function updateWorkspace(email: string, name: string) {
   await db.prepare("UPDATE workspaces SET name = ? WHERE id = ?").bind(name, snapshot.workspace.id).run();
   await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "workspace.updated", targetType: "workspace", targetId: String(snapshot.workspace.id), summary: "Updated workspace name" });
   return db.prepare("SELECT * FROM workspaces WHERE id = ?").bind(snapshot.workspace.id).first();
-}
-
-export async function inviteWorkspaceMember(email: string, memberEmail: string, role: "admin" | "member" | "viewer") {
-  const snapshot = await getSaasSnapshot(email);
-  requireRole(snapshot, ["owner", "admin"]);
-  requireWriteEntitlement(snapshot.entitlements);
-  const db = await getD1();
-  const existing = snapshot.members.find((member) => String(member.email).toLowerCase() === memberEmail.toLowerCase());
-  if (!existing && snapshot.members.length >= snapshot.entitlements.limits.seats) throw new Error(`${snapshot.entitlements.planName} plan seat limit reached`);
-  await db.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, email, role) VALUES (?, ?, ?)").bind(snapshot.workspace.id, memberEmail, role).run();
-  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "member.invited", targetType: "member", targetId: memberEmail, summary: `Added ${memberEmail} as ${role}`, metadata: { role } });
-  return db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? AND email = ?").bind(snapshot.workspace.id, memberEmail).first();
 }
 
 export async function createSimulationRun(email: string, scenarioKey: ScenarioKey, requestedProjectId?: string) {
