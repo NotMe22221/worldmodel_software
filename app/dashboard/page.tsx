@@ -895,9 +895,9 @@ export default function Dashboard() {
               className="new-project"
               data-testid="new-project"
               disabled={creating || (data.workspace.workspace_mode === "customer" && !canCreateProject)}
-              onClick={data.workspace.workspace_mode === "sample" ? provisionRealWorkspace : () => setShowCreate(true)}
+              onClick={data.workspace.workspace_mode === "sample" ? provisionRealWorkspace : () => setTab("integrations")}
             >
-              {data.workspace.workspace_mode === "sample" ? "＋ Clean workspace" : "＋ New project"}
+              {data.workspace.workspace_mode === "sample" ? "＋ Clean workspace" : "＋ Import repository"}
             </button>
           </div>
         </header>
@@ -1008,7 +1008,7 @@ export default function Dashboard() {
                           </span>
                           {!step.complete && (
                             <button onClick={() => {
-                              if (step.key === "repository") setTab("projects");
+                              if (step.key === "repository") setTab("integrations");
                               if (step.key === "simulation" || step.key === "verification") location.href = "/";
                               if (step.key === "team") setTab("team");
                             }}>Start →</button>
@@ -1055,8 +1055,8 @@ export default function Dashboard() {
                 eyebrow="PROJECTS"
                 title="Software twins"
                 description={data.workspace.workspace_mode === "sample" ? "This prepared repository is isolated from customer work. Create a clean workspace before connecting a real repository." : `${data.projects.length} of ${data.entitlements.limits.projects === 1000 ? "unlimited" : data.entitlements.limits.projects} projects used on ${data.entitlements.planName}.`}
-                action={data.workspace.workspace_mode === "sample" ? "Create clean workspace" : canCreateProject ? "New project" : undefined}
-                onAction={data.workspace.workspace_mode === "sample" ? provisionRealWorkspace : () => setShowCreate(true)}
+                action={data.workspace.workspace_mode === "sample" ? "Create clean workspace" : canCreateProject ? "Import from GitHub" : undefined}
+                onAction={data.workspace.workspace_mode === "sample" ? provisionRealWorkspace : () => setTab("integrations")}
               />
               <section className="project-grid">
                 {data.projects.map((project) => (
@@ -1089,6 +1089,11 @@ export default function Dashboard() {
                     <button onClick={() => (location.href = "/")}>
                       Open software twin →
                     </button>
+                    {Boolean(project.repository_verified) && (
+                      <button className="runner-workflow" onClick={() => (location.href = `/api/runner/workflow?project=${encodeURIComponent(project.id)}`)}>
+                        Download CI runner workflow ↓
+                      </button>
+                    )}
                   </article>
                 ))}
                 <button
@@ -1101,14 +1106,14 @@ export default function Dashboard() {
                     {data.workspace.workspace_mode === "sample"
                       ? "Create a clean customer workspace"
                       : canCreateProject
-                      ? "Connect another repository"
+                      ? "Add an unverified manual project"
                       : "Project limit reached"}
                   </b>
                   <small>
                     {data.workspace.workspace_mode === "sample"
                       ? "Sample evidence never mixes with real repositories"
                       : canCreateProject
-                      ? "Connect a tenant-owned repository"
+                      ? "For pilot planning only; GitHub import is recommended"
                       : "Upgrade to add another software twin"}
                   </small>
                 </button>

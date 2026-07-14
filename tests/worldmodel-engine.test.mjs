@@ -12,6 +12,7 @@ import {
 import { formatVerificationReport } from "../worldmodel/verification-report.mjs";
 import { buildWorkspaceActivation } from "../worldmodel/activation.mjs";
 import { normalizeObservedRun } from "../worldmodel/observed-run.mjs";
+import { generateRunnerWorkflow } from "../worldmodel/runner-workflow.mjs";
 import { createHmac } from "node:crypto";
 import {
   createStripePortalWithKey,
@@ -253,6 +254,34 @@ test("observed runner evidence requires a bounded destroyed environment attestat
         },
       }, Date.parse("2026-07-14T03:31:00Z")),
     /cannot be in the future/,
+  );
+});
+
+test("runner workflow is tenant-project bound and contains no embedded secret", () => {
+  const workflow = generateRunnerWorkflow({
+    projectId: "proj_verified_123",
+    apiOrigin: "https://worldmodel.example.com",
+  });
+  assert.match(workflow, /permissions:\n  contents: read/);
+  assert.match(workflow, /projectId:\"proj_verified_123\"/);
+  assert.match(workflow, /secrets\.WORLDMODEL_API_KEY/);
+  assert.match(workflow, /worldmodel:observe/);
+  assert.doesNotMatch(workflow, /wm_live_/);
+  assert.throws(
+    () =>
+      generateRunnerWorkflow({
+        projectId: "../other-tenant",
+        apiOrigin: "https://worldmodel.example.com",
+      }),
+    /Project ID is invalid/,
+  );
+  assert.throws(
+    () =>
+      generateRunnerWorkflow({
+        projectId: "proj_verified_123",
+        apiOrigin: "http://worldmodel.example.com",
+      }),
+    /API origin is invalid/,
   );
 });
 

@@ -22,3 +22,10 @@
   max-height: 280px;
   overflow: auto;
 }
+
+.project-grid article > .runner-workflow {
+  margin-top: 7px;
+  border: 1px solid #cbd8d1;
+  background: #fff;
+  color: #246f4b;
+}
