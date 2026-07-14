@@ -1,4 +1,6 @@
 import { createProject, createSimulationRun, getSaasSnapshot, inviteWorkspaceMember, updateWorkspace, verifySimulationRun } from "../../../db/saas";
+import { importGithubRepository } from "../../../db/business";
+import { businessConfiguration } from "../../../server/runtime-config";
 
 function identity(request: Request) {
   const email = request.headers.get("oai-authenticated-user-email");
@@ -18,7 +20,7 @@ export async function GET(request: Request) {
   const email = identity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
-    return Response.json({ ...(await getSaasSnapshot(email)), user: { email, displayName: email.split("@")[0] } });
+    return Response.json({ ...(await getSaasSnapshot(email)), configuration: await businessConfiguration(), user: { email, displayName: email.split("@")[0] } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load workspace" }, { status: 500 });
   }
@@ -27,9 +29,14 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const email = identity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
-  let payload: { action?: string; name?: string; repository?: string; branch?: string; email?: string; role?: string; scenario?: string; projectId?: string; runId?: string };
+  let payload: { action?: string; name?: string; repository?: string; branch?: string; email?: string; role?: string; scenario?: string; projectId?: string; runId?: string; repositoryId?: string };
   try { payload = await request.json(); }
   catch { return Response.json({ error: "A valid JSON request body is required" }, { status: 400 }); }
+  if (payload.action === "import-repository") {
+    if (!payload.repositoryId) return Response.json({ error: "Choose a connected repository" }, { status: 400 });
+    try { return Response.json({ project: await importGithubRepository(email, payload.repositoryId) }, { status: 201 }); }
+    catch (error) { return failure(error, "Unable to import repository"); }
+  }
   if (payload.action === "create-run") {
     const scenario = payload.scenario;
     if (scenario !== "traffic" && scenario !== "database" && scenario !== "payments") return Response.json({ error: "Choose a supported simulation scenario" }, { status: 400 });

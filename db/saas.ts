@@ -42,6 +42,13 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE INDEX IF NOT EXISTS projects_workspace_idx ON projects(workspace_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS runs_project_idx ON simulation_runs(project_id)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS workspace_members_workspace_email_idx ON workspace_members(workspace_id, email)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS integration_states (token TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), purpose TEXT NOT NULL, installation_id TEXT, created_by TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS github_installations (installation_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), account_login TEXT NOT NULL, account_type TEXT NOT NULL, repository_selection TEXT NOT NULL, permissions_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', connected_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS github_repositories (repository_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL REFERENCES github_installations(installation_id), workspace_id TEXT NOT NULL REFERENCES workspaces(id), full_name TEXT NOT NULL, default_branch TEXT NOT NULL, is_private INTEGER NOT NULL DEFAULT 1, selected INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS subscriptions (workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id), stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT NOT NULL DEFAULT 'trialing', plan TEXT NOT NULL DEFAULT 'trial', current_period_end TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS billing_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS github_installations_workspace_idx ON github_installations(workspace_id)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS github_repositories_workspace_idx ON github_repositories(workspace_id)"),
   ]);
   await ensureRunEvidenceColumns(db);
 }
@@ -75,10 +82,13 @@ export async function getSaasSnapshot(email: string) {
   const projects = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC").bind(workspace.id).all();
   const runs = await db.prepare("SELECT r.*, p.name AS project_name FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 20").bind(workspace.id).all();
   const members = await db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? ORDER BY created_at").bind(workspace.id).all();
-  return { workspace, projects: projects.results, runs: runs.results, members: members.results };
+  const githubInstallations = await db.prepare("SELECT installation_id, account_login, account_type, repository_selection, status, created_at AS connected_at FROM github_installations WHERE workspace_id = ? ORDER BY created_at DESC").bind(workspace.id).all();
+  const githubRepositories = await db.prepare("SELECT repository_id, installation_id, full_name, default_branch, is_private, selected, synced_at FROM github_repositories WHERE workspace_id = ? ORDER BY selected DESC, full_name LIMIT 100").bind(workspace.id).all();
+  const subscription = await db.prepare("SELECT status, plan, current_period_end, updated_at FROM subscriptions WHERE workspace_id = ?").bind(workspace.id).first();
+  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription };
 }
 
-function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>, allowed: string[]) {
+export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>, allowed: string[]) {
   const role = String((snapshot.workspace as Record<string, unknown>).membership_role || "viewer");
   if (!allowed.includes(role)) throw new Error("Your workspace role does not allow this action");
 }

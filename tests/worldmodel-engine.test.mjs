@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { calculateResilience, checkOrderIntegrity, immutableScenario, scenarioProfiles, scanManifest, verifyReplay } from "../worldmodel/simulation-engine.mjs";
 import { formatVerificationReport } from "../worldmodel/verification-report.mjs";
+import { createHmac } from "node:crypto";
+import { verifyStripeSignature } from "../server/stripe.ts";
+import { authorizedInstallation } from "../server/github.ts";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(await readFile(new URL("../sample-app/worldmodel.manifest.json", import.meta.url)));
@@ -43,4 +46,20 @@ test("verification report preserves immutable replay evidence and before-after m
   assert.match(report, /Resilience: 31 → 94/);
   assert.match(report, /Journey success: 22% → 100%/);
   assert.match(report, /tenant-owned simulation record/);
+});
+
+test("Stripe webhook verification accepts only a fresh matching raw-body signature", async () => {
+  const body = '{"id":"evt_verified","type":"checkout.session.completed"}';
+  const secret = "whsec_test_worldmodel";
+  const timestamp = 1_800_000_000;
+  const digest = createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex");
+  assert.equal(await verifyStripeSignature(body, `t=${timestamp},v1=${digest}`, secret, timestamp + 30), true);
+  assert.equal(await verifyStripeSignature(`${body} `, `t=${timestamp},v1=${digest}`, secret, timestamp + 30), false);
+  assert.equal(await verifyStripeSignature(body, `t=${timestamp},v1=${digest}`, secret, timestamp + 301), false);
+});
+
+test("GitHub connection accepts only an installation visible to the authorized user", () => {
+  const installations = [{ id: 42, account: { login: "northstar", type: "Organization" }, repository_selection: "selected", permissions: { contents: "read" } }];
+  assert.equal(authorizedInstallation(installations, "42")?.account.login, "northstar");
+  assert.equal(authorizedInstallation(installations, "999"), null);
 });

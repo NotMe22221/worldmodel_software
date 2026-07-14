@@ -1,6 +1,6 @@
 # WorldModel for Software
 
-A visual flight simulator for software systems. The MVP maps a connected commerce repository, injects repeatable failures, shows their impact on a critical checkout journey, generates a Codex repair, replays the immutable scenario, and packages the evidence into a verification report and draft pull request.
+A visual flight simulator and SaaS control plane for software systems. WorldModel maps a connected repository, injects repeatable failures, shows their impact on a critical journey, generates a Codex repair, replays the immutable scenario, and preserves the evidence for release review.
 
 ## Demo
 
@@ -28,7 +28,11 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Executable checks for scanning, score improvement, replay fingerprints, and duplicate orders
 - Disposable virtual-lab harness that seeds data, starts five HTTP services, injects and recovers a fault, and destroys its temporary workspace
 - Downloadable verification report with residual risks and draft-PR artifact
-- Responsive single-route demo designed for a sub-three-minute presentation
+- Tenant-backed workspace with projects, run history, reports, usage, roles, integrations, and plan state
+- Durable scenario fingerprints, replay evidence, metered simulation minutes, and tenant-isolated report downloads
+- GitHub App install/OAuth ownership validation, installation-scoped repository sync, and repository import
+- Stripe-hosted subscription checkout with signed, idempotent entitlement webhooks
+- Responsive product and sub-three-minute demonstration path
 
 ## Local use
 
@@ -38,3 +42,9 @@ npm run dev
 ```
 
 Open `http://localhost:3000`. Validate with `npm test` and `npm run lint`.
+
+## Production integrations
+
+Copy the keys from `.env.example` into the Sites production environment rather than committing secrets. Configure the GitHub App setup URL as `/api/integrations/github/setup` and its OAuth callback as `/api/integrations/github/callback`. The connection flow validates a one-time workspace state and confirms the installation appears in the authorizing user’s accessible installations before saving repository metadata.
+
+Configure Stripe Checkout prices for Starter and Pro, then register `/api/billing/webhook` for `checkout.session.completed` and `customer.subscription.*` lifecycle events. Subscription limits change only after a fresh, matching raw-body webhook signature is processed.
