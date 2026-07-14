@@ -769,6 +769,9 @@ export default function Dashboard() {
   const verifiedRuns = data.runs.filter(
     (run) => run.status === "verified",
   ).length;
+  const observedRuns = data.runs.filter(
+    (run) => run.status === "verified" && run.evidence_kind === "observed",
+  ).length;
   const usagePercent = Math.min(
     100,
     Math.round(
@@ -959,9 +962,9 @@ export default function Dashboard() {
                   note="Persisted evidence"
                 />
                 <Kpi
-                  label="VERIFIED REPAIRS"
-                  value={String(verifiedRuns)}
-                  note="Ready for review"
+                  label="OBSERVED REPAIRS"
+                  value={String(observedRuns)}
+                  note={`${verifiedRuns - observedRuns} modeled replays`}
                 />
                 <Kpi
                   label="AUDIT EVENTS"

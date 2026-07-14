@@ -173,6 +173,7 @@ test("customer activation advances only from persisted product milestones", () =
     runs: [
       {
         status: "verified",
+        evidence_kind: "observed",
         project_id: "project_verified",
         created_at: "2026-07-14T02:00:00Z",
         verified_at: "2026-07-14T02:05:00Z",
@@ -195,6 +196,15 @@ test("customer activation advances only from persisted product milestones", () =
     })),
   });
   assert.equal(unverified.percent, 0);
+  const modeledOnly = buildWorkspaceActivation({
+    ...workspace,
+    runs: workspace.runs.map((run) => ({
+      ...run,
+      evidence_kind: "modeled",
+    })),
+  });
+  assert.equal(modeledOnly.percent, 50);
+  assert.equal(modeledOnly.steps[2].complete, false);
   assert.equal(
     buildWorkspaceActivation({ ...workspace, workspaceMode: "sample" }),
     null,

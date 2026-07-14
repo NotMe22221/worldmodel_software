@@ -12,6 +12,8 @@ type Totals = {
   members: number;
   simulations: number;
   verified_runs: number;
+  observed_runs: number;
+  modeled_runs: number;
   open_cases: number;
   simulation_minutes: number;
   active_subscriptions: number;
@@ -196,7 +198,7 @@ export default function OperatorPage() {
           <article>
             <span>SIMULATIONS</span>
             <strong>{data.totals.simulations}</strong>
-            <small>{data.totals.verified_runs} verified repairs</small>
+            <small>{data.totals.observed_runs} observed · {data.totals.modeled_runs} modeled</small>
           </article>
           <article>
             <span>OPEN CASES</span>
@@ -217,7 +219,7 @@ export default function OperatorPage() {
               ["Workspace created", data.totals.customer_workspaces],
               ["Repository connected", data.totals.activation_repository],
               ["First simulation", data.totals.activation_simulation],
-              ["Verified replay", data.totals.activation_verification],
+              ["Observed replay", data.totals.activation_verification],
               ["Team adopted", data.totals.activation_team],
             ].map(([label, count]) => {
               const value = Number(count);

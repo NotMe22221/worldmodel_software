@@ -29,10 +29,14 @@ export function buildWorkspaceActivation({
     },
     {
       key: "verification",
-      label: "Verify an identical replay",
-      complete: ownedRuns.some((run) => run.status === "verified"),
+      label: "Submit observed replay evidence",
+      complete: ownedRuns.some(
+        (run) => run.status === "verified" && run.evidence_kind === "observed",
+      ),
       completedAt:
-        ownedRuns.find((run) => run.status === "verified")?.verified_at || null,
+        ownedRuns.find(
+          (run) => run.status === "verified" && run.evidence_kind === "observed",
+        )?.verified_at || null,
     },
     {
       key: "team",
