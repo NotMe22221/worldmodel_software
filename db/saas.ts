@@ -59,6 +59,11 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS launch_checks (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), check_key TEXT NOT NULL, passed INTEGER NOT NULL DEFAULT 0, evidence TEXT, attested_by TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS launch_checks_workspace_key_idx ON launch_checks(workspace_id, check_key)"),
     db.prepare("CREATE INDEX IF NOT EXISTS deletion_requests_workspace_idx ON data_deletion_requests(workspace_id, created_at)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, key_prefix TEXT NOT NULL, key_hash TEXT NOT NULL, scopes_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL, last_used_at TEXT, expires_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, revoked_at TEXT)"),
+    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_hash_idx ON api_keys(key_hash)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS api_keys_workspace_idx ON api_keys(workspace_id, created_at)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS api_rate_buckets (id TEXT PRIMARY KEY, api_key_id TEXT NOT NULL REFERENCES api_keys(id), bucket_start TEXT NOT NULL, request_count INTEGER NOT NULL DEFAULT 0)"),
+    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS api_rate_buckets_key_start_idx ON api_rate_buckets(api_key_id, bucket_start)"),
   ]);
   await ensureRunEvidenceColumns(db);
 }
@@ -100,7 +105,9 @@ export async function getSaasSnapshot(email: string) {
   const supportCases = auditAccess ? await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? AND lower(created_by) = lower(?) ORDER BY created_at DESC LIMIT 50").bind(workspace.id, email).all();
   const launchChecks = await db.prepare("SELECT check_key, passed, evidence, updated_at FROM launch_checks WHERE workspace_id = ? ORDER BY check_key").bind(workspace.id).all();
   const deletionRequests = workspace.membership_role === "owner" ? await db.prepare("SELECT id, scope, status, reason, execute_after, created_at, canceled_at, completed_at FROM data_deletion_requests WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 10").bind(workspace.id).all() : { results: [] };
-  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results };
+  const apiKeys = auditAccess ? await db.prepare("SELECT id, name, key_prefix, scopes_json, status, created_by, last_used_at, expires_at, created_at, revoked_at FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 20").bind(workspace.id).all() : { results: [] };
+  const apiUsage = auditAccess ? await db.prepare("SELECT COALESCE(SUM(b.request_count), 0) AS requests_today FROM api_rate_buckets b JOIN api_keys k ON k.id = b.api_key_id WHERE k.workspace_id = ? AND b.bucket_start >= date('now')").bind(workspace.id).first() : { requests_today: 0 };
+  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results, apiKeys: apiKeys.results, apiUsage };
 }
 
 export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>, allowed: string[]) {
@@ -139,35 +146,45 @@ export async function inviteWorkspaceMember(email: string, memberEmail: string, 
 export async function createSimulationRun(email: string, scenarioKey: ScenarioKey, requestedProjectId?: string) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin", "member"]);
-  const workspace = snapshot.workspace as { id: string; simulation_minutes: number; monthly_limit: number };
+  return createSimulationRunForWorkspace(String(snapshot.workspace.id), email, scenarioKey, requestedProjectId);
+}
+
+export async function createSimulationRunForWorkspace(workspaceId: string, actor: string, scenarioKey: ScenarioKey, requestedProjectId?: string) {
+  const db = await getD1();
+  const workspace = await db.prepare("SELECT id, simulation_minutes, monthly_limit FROM workspaces WHERE id = ?").bind(workspaceId).first<{ id: string; simulation_minutes: number; monthly_limit: number }>();
+  if (!workspace) throw new Error("Workspace not found");
   if (workspace.simulation_minutes + 2 > workspace.monthly_limit) throw new Error("Monthly simulation minute limit reached");
-  const project = snapshot.projects.find((candidate) => !requestedProjectId || candidate.id === requestedProjectId) as { id: string } | undefined;
+  const project = requestedProjectId
+    ? await db.prepare("SELECT id FROM projects WHERE id = ? AND workspace_id = ?").bind(requestedProjectId, workspaceId).first<{ id: string }>()
+    : await db.prepare("SELECT id FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 1").bind(workspaceId).first<{ id: string }>();
   if (!project) throw new Error("Project not found in this workspace");
   const profile = scenarioProfiles[scenarioKey];
   const id = `run_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const seed = `wm_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
-  const db = await getD1();
   await db.batch([
     db.prepare("INSERT INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, scenario_key, scenario_fingerprint, seed, before_error_rate, before_latency_ms, before_journey_success) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, project.id, profile.label, "completed", profile.before.score, null, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess, 120, scenarioKey, profile.fingerprint, seed, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess),
     db.prepare("UPDATE workspaces SET simulation_minutes = simulation_minutes + 2 WHERE id = ?").bind(workspace.id),
   ]);
-  await recordAudit({ workspaceId: workspace.id, actorEmail: email, action: "simulation.completed", targetType: "simulation_run", targetId: id, summary: `${profile.label} exposed a release risk`, metadata: { scenario: scenarioKey, fingerprint: profile.fingerprint, beforeScore: profile.before.score } });
+  await recordAudit({ workspaceId: workspace.id, actorEmail: actor, action: "simulation.completed", targetType: "simulation_run", targetId: id, summary: `${profile.label} exposed a release risk`, metadata: { scenario: scenarioKey, fingerprint: profile.fingerprint, beforeScore: profile.before.score } });
   return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(id).first();
 }
 
 export async function verifySimulationRun(email: string, runId: string) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin", "member"]);
-  const workspace = snapshot.workspace as { id: string };
+  return verifySimulationRunForWorkspace(String(snapshot.workspace.id), email, runId);
+}
+
+export async function verifySimulationRunForWorkspace(workspaceId: string, actor: string, runId: string) {
   const db = await getD1();
-  const run = await db.prepare("SELECT r.* FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspace.id).first<{ scenario_key: ScenarioKey | null } & Record<string, unknown>>();
+  const run = await db.prepare("SELECT r.* FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspaceId).first<{ scenario_key: ScenarioKey | null } & Record<string, unknown>>();
   if (!run) throw new Error("Simulation run not found in this workspace");
   const key = run.scenario_key;
   if (!key || !scenarioProfiles[key]) throw new Error("This legacy run cannot be replayed");
   const profile = scenarioProfiles[key];
   await db.prepare("UPDATE simulation_runs SET status = 'verified', after_score = ?, error_rate = ?, latency_ms = ?, journey_success = ?, after_error_rate = ?, after_latency_ms = ?, after_journey_success = ?, verified_at = CURRENT_TIMESTAMP WHERE id = ?").bind(profile.after.score, profile.after.errorRate, profile.after.latencyMs, profile.after.journeySuccess, profile.after.errorRate, profile.after.latencyMs, profile.after.journeySuccess, runId).run();
   await db.prepare("UPDATE projects SET resilience_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT project_id FROM simulation_runs WHERE id = ?)").bind(profile.after.score, runId).run();
-  await recordAudit({ workspaceId: workspace.id, actorEmail: email, action: "simulation.verified", targetType: "simulation_run", targetId: runId, summary: `${profile.label} repair passed identical replay`, metadata: { scenario: key, afterScore: profile.after.score } });
+  await recordAudit({ workspaceId, actorEmail: actor, action: "simulation.verified", targetType: "simulation_run", targetId: runId, summary: `${profile.label} repair passed identical replay`, metadata: { scenario: key, afterScore: profile.after.score } });
   return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(runId).first();
 }
 

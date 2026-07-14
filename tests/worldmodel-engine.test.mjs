@@ -8,6 +8,7 @@ import { verifyStripeSignature } from "../server/stripe.ts";
 import { authorizedInstallation } from "../server/github.ts";
 import { safeCsvCell } from "../worldmodel/safe-csv.mjs";
 import { launchReadiness } from "../server/readiness.ts";
+import { digestApiToken, generateApiTokenMaterial } from "../worldmodel/api-key-security.mjs";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(await readFile(new URL("../sample-app/worldmodel.manifest.json", import.meta.url)));
@@ -82,8 +83,8 @@ test("commercial launch gate is derived from live state and owner attestations",
     ],
     configuration: { github: { configured: false }, billing: { configured: false } },
   });
-  assert.equal(baseline.passed, 7);
-  assert.equal(baseline.total, 9);
+  assert.equal(baseline.passed, 8);
+  assert.equal(baseline.total, 10);
   assert.equal(baseline.ready, false);
   assert.match(baseline.checks.find((check) => check.key === "github_live").evidence, /credentials are missing/);
 
@@ -94,4 +95,15 @@ test("commercial launch gate is derived from live state and owner attestations",
   });
   assert.equal(ready.score, 100);
   assert.equal(ready.ready, true);
+});
+
+test("developer API credentials use one-time high-entropy material and irreversible stored digests", async () => {
+  const first = generateApiTokenMaterial("key_securitytest");
+  const second = generateApiTokenMaterial("key_securitytest");
+  assert.match(first.token, /^wm_live_key_securitytest_[a-f0-9]{64}$/);
+  assert.notEqual(first.token, second.token);
+  assert.equal(first.keyPrefix, "wm_live_key_securitytest_…");
+  const digest = await digestApiToken(first.token);
+  assert.match(digest, /^[a-f0-9]{64}$/);
+  assert.ok(!digest.includes(first.token));
 });

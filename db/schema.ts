@@ -157,3 +157,29 @@ export const launchChecks = sqliteTable("launch_checks", {
 }, (table) => [
   uniqueIndex("launch_checks_workspace_key_idx").on(table.workspaceId, table.checkKey),
 ]);
+
+export const apiKeys = sqliteTable("api_keys", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  name: text("name").notNull(),
+  keyPrefix: text("key_prefix").notNull(),
+  keyHash: text("key_hash").notNull(),
+  scopesJson: text("scopes_json").notNull(),
+  status: text("status").notNull().default("active"),
+  createdBy: text("created_by").notNull(),
+  lastUsedAt: text("last_used_at"),
+  expiresAt: text("expires_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  revokedAt: text("revoked_at"),
+}, (table) => [
+  uniqueIndex("api_keys_hash_idx").on(table.keyHash),
+]);
+
+export const apiRateBuckets = sqliteTable("api_rate_buckets", {
+  id: text("id").primaryKey(),
+  apiKeyId: text("api_key_id").notNull().references(() => apiKeys.id),
+  bucketStart: text("bucket_start").notNull(),
+  requestCount: integer("request_count").notNull().default(0),
+}, (table) => [
+  uniqueIndex("api_rate_buckets_key_start_idx").on(table.apiKeyId, table.bucketStart),
+]);

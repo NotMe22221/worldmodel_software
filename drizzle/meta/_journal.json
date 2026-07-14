@@ -36,6 +36,13 @@
       "when": 1783994503551,
       "tag": "0004_outstanding_squadron_sinister",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1783995047808,
+      "tag": "0005_useful_paper_doll",
+      "breakpoints": true
     }
   ]
 }
