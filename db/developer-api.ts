@@ -98,6 +98,6 @@ export async function listApiProjects(workspaceId: string) {
 
 export async function listApiRuns(workspaceId: string) {
   const db = await getD1();
-  const rows = await db.prepare("SELECT r.id, r.project_id, p.name AS project_name, r.scenario, r.scenario_key, r.scenario_fingerprint, r.seed, r.status, r.before_score, r.after_score, r.before_error_rate, r.after_error_rate, r.before_latency_ms, r.after_latency_ms, r.before_journey_success, r.after_journey_success, r.verified_at, r.created_at FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 100").bind(workspaceId).all();
+  const rows = await db.prepare("SELECT r.id, r.project_id, p.name AS project_name, r.scenario, r.scenario_key, r.scenario_fingerprint, r.seed, r.status, r.evidence_kind, r.environment_id, r.journey_runner, r.environment_destroyed_at, r.before_score, r.after_score, r.before_error_rate, r.after_error_rate, r.before_latency_ms, r.after_latency_ms, r.before_journey_success, r.after_journey_success, r.before_service_health, r.after_service_health, r.verified_at, r.created_at FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 100").bind(workspaceId).all();
   return rows.results;
 }

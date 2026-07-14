@@ -23,6 +23,12 @@ export function formatVerificationReport(run) {
       : repositoryVerified
         ? "Observed repair candidate is ready for human review. Merge remains a deliberate reviewer action."
         : "Observed replay passed, but repository ownership is unverified. Import the repository through the workspace GitHub installation before treating this as tenant-owned release evidence.";
+  const environmentEvidence = observed
+    ? `Environment ID: ${value(run, "environment_id")}\nJourney runner: ${value(run, "journey_runner")}\nEnvironment destroyed: ${value(run, "environment_destroyed_at")}\n`
+    : "";
+  const serviceHealth = observed
+    ? `Service health: ${value(run, "before_service_health")}% → ${value(run, "after_service_health")}%\n`
+    : "";
   return `WORLDMODEL ${reportKind} REPORT
 
 ${disclosures}
@@ -30,7 +36,7 @@ ${disclosures}
 Project: ${value(run, "project_name")}
 Repository: ${value(run, "repository")} · ${value(run, "branch")}
 Evidence kind: ${evidenceKind}
-Scenario: ${value(run, "scenario")}
+${environmentEvidence}Scenario: ${value(run, "scenario")}
 Scenario fingerprint: ${value(run, "scenario_fingerprint")}
 Seed: ${value(run, "seed")}
 Run ID: ${value(run, "id")}
@@ -41,6 +47,7 @@ Resilience: ${value(run, "before_score")} → ${value(run, "after_score")}
 Error rate: ${value(run, "before_error_rate", value(run, "error_rate"))} → ${value(run, "after_error_rate")}
 P95 latency: ${value(run, "before_latency_ms")}ms → ${value(run, "after_latency_ms")}ms
 Journey success: ${value(run, "before_journey_success")}% → ${value(run, "after_journey_success")}%
+${serviceHealth}
 
 ${observed || sample ? "VERIFICATION EVIDENCE" : "MODELED EVIDENCE"}
 ${observed || sample ? "✓" : "~"} Identical scenario fingerprint and seed replayed

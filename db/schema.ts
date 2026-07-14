@@ -51,8 +51,21 @@ export const simulationRuns = sqliteTable("simulation_runs", {
   afterJourneySuccess: integer("after_journey_success"),
   verifiedAt: text("verified_at"),
   evidenceKind: text("evidence_kind").notNull().default("modeled"),
+  environmentId: text("environment_id"),
+  journeyRunner: text("journey_runner"),
+  environmentDestroyedAt: text("environment_destroyed_at"),
+  beforeServiceHealth: integer("before_service_health"),
+  afterServiceHealth: integer("after_service_health"),
+  attestationJson: text("attestation_json"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  uniqueIndex("simulation_runs_replay_identity_idx").on(
+    table.projectId,
+    table.scenarioFingerprint,
+    table.seed,
+    table.evidenceKind,
+  ),
+]);
 
 export const repairProposals = sqliteTable("repair_proposals", {
   id: text("id").primaryKey(),

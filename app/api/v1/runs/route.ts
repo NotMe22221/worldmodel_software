@@ -1,11 +1,12 @@
 import { ApiAccessError, authenticateApiRequest, listApiRuns } from "@/db/developer-api";
-import { createSimulationRunForWorkspace, verifySimulationRunForWorkspace } from "@/db/saas";
+import { createSimulationRunForWorkspace, ingestObservedRunForWorkspace, verifySimulationRunForWorkspace } from "@/db/saas";
+import { normalizeObservedRun } from "@/worldmodel/observed-run.mjs";
 
 function apiFailure(error: unknown, headers: Record<string, string> = {}) {
   if (error instanceof ApiAccessError) return Response.json({ error: { code: error.status === 429 ? "rate_limit_exceeded" : error.status === 403 ? "insufficient_scope" : error.status === 402 ? "subscription_required" : "unauthorized", message: error.message } }, { status: error.status, headers: error.headers });
   const message = error instanceof Error ? error.message : "Request failed";
-  const status = message.includes("not found") ? 404 : message.includes("limit") ? 429 : 500;
-  return Response.json({ error: { code: status === 404 ? "not_found" : status === 429 ? "usage_limit_exceeded" : "internal_error", message } }, { status, headers });
+  const status = message.includes("not found") ? 404 : message.includes("limit") ? 429 : /required|invalid|must|between|match|future|timestamps|scenario|already used/.test(message) ? 400 : 500;
+  return Response.json({ error: { code: status === 404 ? "not_found" : status === 429 ? "usage_limit_exceeded" : status === 400 ? "invalid_request" : "internal_error", message } }, { status, headers });
 }
 
 export async function GET(request: Request) {
@@ -21,10 +22,18 @@ export async function POST(request: Request) {
   catch (error) { return apiFailure(error); }
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength > 16_384) return Response.json({ error: { code: "invalid_request", message: "Request body exceeds 16 KB" } }, { status: 413, headers: context.rateHeaders });
-  let payload: { action?: string; projectId?: string; scenario?: string; runId?: string };
+  let payload: { action?: string; projectId?: string; scenario?: string; runId?: string; [key: string]: unknown };
   try { payload = await request.json(); }
   catch { return Response.json({ error: { code: "invalid_request", message: "A valid JSON request body is required" } }, { status: 400, headers: context.rateHeaders }); }
   try {
+    if (payload.action === "observe") {
+      const run = await ingestObservedRunForWorkspace(
+        context.workspaceId,
+        context.actor,
+        normalizeObservedRun(payload),
+      );
+      return Response.json({ data: run }, { status: 201, headers: { ...context.rateHeaders, location: `/api/v1/runs?id=${encodeURIComponent(String((run as { id?: string })?.id || ""))}` } });
+    }
     if (payload.action === "verify") {
       if (!payload.runId) return Response.json({ error: { code: "invalid_request", message: "runId is required" } }, { status: 400, headers: context.rateHeaders });
       const run = await verifySimulationRunForWorkspace(context.workspaceId, context.actor, payload.runId);

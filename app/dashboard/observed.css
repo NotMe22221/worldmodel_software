@@ -1,0 +1,24 @@
+.api-observed {
+  border-top: 1px solid #e5e9e6;
+  margin: 14px 15px 15px;
+  padding-top: 12px;
+}
+
+.api-observed summary {
+  color: #267a51;
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.api-observed p {
+  color: #718078;
+  font-size: 7px;
+  line-height: 1.55;
+}
+
+.api-observed pre {
+  border-radius: 6px;
+  max-height: 280px;
+  overflow: auto;
+}

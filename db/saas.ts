@@ -41,11 +41,16 @@ async function ensureRunEvidenceColumns(db: Awaited<ReturnType<typeof getD1>>) {
     ["before_journey_success", "INTEGER"], ["after_journey_success", "INTEGER"],
     ["verified_at", "TEXT"],
     ["evidence_kind", "TEXT NOT NULL DEFAULT 'modeled'"],
+    ["environment_id", "TEXT"], ["journey_runner", "TEXT"],
+    ["environment_destroyed_at", "TEXT"],
+    ["before_service_health", "INTEGER"], ["after_service_health", "INTEGER"],
+    ["attestation_json", "TEXT"],
   ];
   for (const [name, type] of additions) {
     if (!existing.has(name)) await db.prepare(`ALTER TABLE simulation_runs ADD COLUMN ${name} ${type}`).run();
   }
   await db.prepare("UPDATE simulation_runs SET evidence_kind = 'sample_fixture' WHERE project_id IN (SELECT id FROM projects WHERE source_kind = 'sample')").run();
+  await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS simulation_runs_replay_identity_idx ON simulation_runs(project_id, scenario_fingerprint, seed, evidence_kind)").run();
 }
 
 async function ensureProjectProvenanceColumns(db: Awaited<ReturnType<typeof getD1>>) {
@@ -165,7 +170,7 @@ export async function getSaasSnapshot(email: string) {
   const projects = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC").bind(workspace.id).all();
   const runs = await db.prepare("SELECT r.*, p.name AS project_name, p.source_kind, p.repository_verified FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 20").bind(workspace.id).all();
   await db.prepare("INSERT OR IGNORE INTO repair_proposals (id, workspace_id, run_id, status, title, summary, files_json, tests_json, risks_json, created_by, requested_at) SELECT 'repair_' || substr(r.id, 5), ?, r.id, 'ready_for_review', 'Graceful ' || lower(r.scenario) || ' recovery', 'Codex generated bounded timeout, idempotency, and recovery controls for the verified scenario.', '[\"src/payment.ts\",\"tests/checkout.spec.mjs\"]', '[\"Identical scenario replay\",\"Critical user journey\",\"Duplicate-order regression\"]', '[\"Regional failover remains unverified\",\"Queue saturation beyond the tested load remains unverified\"]', 'codex@system.worldmodel', CURRENT_TIMESTAMP FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? AND r.status = 'verified'").bind(workspace.id, workspace.id).run();
-  const repairs = await db.prepare("SELECT rp.*, r.scenario, r.scenario_fingerprint, r.before_score, r.after_score, r.verified_at, r.evidence_kind, p.name AS project_name, p.repository, p.branch AS project_branch, p.source_kind, p.repository_verified FROM repair_proposals rp JOIN simulation_runs r ON r.id = rp.run_id JOIN projects p ON p.id = r.project_id WHERE rp.workspace_id = ? ORDER BY rp.updated_at DESC").bind(workspace.id).all();
+  const repairs = await db.prepare("SELECT rp.*, r.scenario, r.scenario_fingerprint, r.before_score, r.after_score, r.verified_at, r.evidence_kind, r.environment_id, r.journey_runner, r.environment_destroyed_at, r.before_service_health, r.after_service_health, p.name AS project_name, p.repository, p.branch AS project_branch, p.source_kind, p.repository_verified FROM repair_proposals rp JOIN simulation_runs r ON r.id = rp.run_id JOIN projects p ON p.id = r.project_id WHERE rp.workspace_id = ? ORDER BY rp.updated_at DESC").bind(workspace.id).all();
   const members = await db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? ORDER BY created_at").bind(workspace.id).all();
   const availableWorkspaces = await db.prepare("SELECT w.id, w.name, w.workspace_mode, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id WHERE lower(m.email) = lower(?) ORDER BY w.workspace_mode, w.name").bind(email).all();
   const pendingInvitations = (workspace.membership_role === "owner" || workspace.membership_role === "admin") ? await db.prepare("SELECT id, email, role, status, invited_by, expires_at, created_at, accepted_at, revoked_at FROM workspace_invitations WHERE workspace_id = ? AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP ORDER BY created_at DESC").bind(workspace.id).all() : { results: [] };
@@ -304,6 +309,53 @@ export async function createSimulationRunForWorkspace(workspaceId: string, actor
   return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(id).first();
 }
 
+type ObservedMetricSet = { resilienceScore: number; errorRate: number; latencyMs: number; journeySuccess: number; serviceHealth: number };
+type ObservedRunInput = {
+  projectId: string;
+  scenario: ScenarioKey;
+  fingerprint: string;
+  seed: string;
+  environmentId: string;
+  environmentDestroyedAt: string;
+  journeyRunner: "playwright";
+  journeyName: string;
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  before: ObservedMetricSet;
+  after: ObservedMetricSet;
+};
+
+export async function ingestObservedRunForWorkspace(workspaceId: string, actor: string, input: ObservedRunInput) {
+  const db = await getD1();
+  const entitlements = await getWorkspaceEntitlements(workspaceId);
+  requireWriteEntitlement(entitlements);
+  const project = await db.prepare("SELECT id FROM projects WHERE id = ? AND workspace_id = ?").bind(input.projectId, workspaceId).first<{ id: string }>();
+  if (!project) throw new Error("Project not found in this workspace");
+  const existing = await db.prepare("SELECT * FROM simulation_runs WHERE project_id = ? AND seed = ? AND evidence_kind = 'observed' LIMIT 1").bind(project.id, input.seed).first<Record<string, unknown>>();
+  if (existing) {
+    if (existing.scenario_fingerprint !== input.fingerprint || existing.environment_id !== input.environmentId)
+      throw new Error("seed was already used for a different observed run");
+    return existing;
+  }
+  const minutes = Math.max(1, Math.ceil(input.durationSeconds / 60));
+  const workspace = await db.prepare("SELECT simulation_minutes FROM workspaces WHERE id = ?").bind(workspaceId).first<{ simulation_minutes: number }>();
+  if (!workspace) throw new Error("Workspace not found");
+  if (Number(workspace.simulation_minutes) + minutes > entitlements.limits.simulationMinutes) throw new Error("Monthly simulation minute limit reached");
+  const id = `run_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const profile = scenarioProfiles[input.scenario];
+  const beforeErrorRate = `${input.before.errorRate}%`;
+  const afterErrorRate = `${input.after.errorRate}%`;
+  const attestation = JSON.stringify({ journeyName: input.journeyName, startedAt: input.startedAt, endedAt: input.endedAt });
+  await db.batch([
+    db.prepare("INSERT INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, scenario_key, scenario_fingerprint, seed, before_error_rate, after_error_rate, before_latency_ms, after_latency_ms, before_journey_success, after_journey_success, verified_at, evidence_kind, environment_id, journey_runner, environment_destroyed_at, before_service_health, after_service_health, attestation_json, created_at) VALUES (?, ?, ?, 'verified', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'observed', ?, ?, ?, ?, ?, ?, ?)").bind(id, project.id, profile.label, input.before.resilienceScore, input.after.resilienceScore, afterErrorRate, input.after.latencyMs, input.after.journeySuccess, input.durationSeconds, input.scenario, input.fingerprint, input.seed, beforeErrorRate, afterErrorRate, input.before.latencyMs, input.after.latencyMs, input.before.journeySuccess, input.after.journeySuccess, input.environmentId, input.journeyRunner, input.environmentDestroyedAt, input.before.serviceHealth, input.after.serviceHealth, attestation, input.startedAt),
+    db.prepare("UPDATE workspaces SET simulation_minutes = simulation_minutes + ? WHERE id = ?").bind(minutes, workspaceId),
+    db.prepare("UPDATE projects SET resilience_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(input.after.resilienceScore, project.id),
+  ]);
+  await recordAudit({ workspaceId, actorEmail: actor, action: "simulation.observed", targetType: "simulation_run", targetId: id, summary: `${profile.label} observed in ${input.environmentId}`, metadata: { scenario: input.scenario, fingerprint: input.fingerprint, environmentId: input.environmentId, journeyRunner: input.journeyRunner, environmentDestroyedAt: input.environmentDestroyedAt } });
+  return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(id).first();
+}
+
 export async function verifySimulationRun(email: string, runId: string) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin", "member"]);
@@ -314,8 +366,9 @@ export async function verifySimulationRun(email: string, runId: string) {
 export async function verifySimulationRunForWorkspace(workspaceId: string, actor: string, runId: string) {
   requireWriteEntitlement(await getWorkspaceEntitlements(workspaceId));
   const db = await getD1();
-  const run = await db.prepare("SELECT r.* FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspaceId).first<{ scenario_key: ScenarioKey | null } & Record<string, unknown>>();
+  const run = await db.prepare("SELECT r.* FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspaceId).first<{ scenario_key: ScenarioKey | null; evidence_kind: string } & Record<string, unknown>>();
   if (!run) throw new Error("Simulation run not found in this workspace");
+  if (run.evidence_kind === "observed") return run;
   const key = run.scenario_key;
   if (!key || !scenarioProfiles[key]) throw new Error("This legacy run cannot be replayed");
   const profile = scenarioProfiles[key];

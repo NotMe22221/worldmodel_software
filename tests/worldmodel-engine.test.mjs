@@ -11,6 +11,7 @@ import {
 } from "../worldmodel/simulation-engine.mjs";
 import { formatVerificationReport } from "../worldmodel/verification-report.mjs";
 import { buildWorkspaceActivation } from "../worldmodel/activation.mjs";
+import { normalizeObservedRun } from "../worldmodel/observed-run.mjs";
 import { createHmac } from "node:crypto";
 import {
   createStripePortalWithKey,
@@ -100,6 +101,11 @@ test("verification report preserves immutable replay evidence and before-after m
     repository: "shopstream/demo-store",
     repository_verified: 1,
     evidence_kind: "observed",
+    environment_id: "wm-ci-test-01",
+    journey_runner: "playwright",
+    environment_destroyed_at: "2026-07-13T23:43:00Z",
+    before_service_health: 44,
+    after_service_health: 98,
     branch: "main",
     scenario: "Payment outage",
     scenario_fingerprint: "scn_payment_503_45s_v1",
@@ -117,6 +123,8 @@ test("verification report preserves immutable replay evidence and before-after m
   assert.match(report, /Scenario fingerprint: scn_payment_503_45s_v1/);
   assert.match(report, /WORLDMODEL VERIFICATION REPORT/);
   assert.match(report, /OBSERVED EVIDENCE/);
+  assert.match(report, /Environment ID: wm-ci-test-01/);
+  assert.match(report, /Service health: 44% → 98%/);
   assert.match(report, /Resilience: 31 → 94/);
   assert.match(report, /Journey success: 22% → 100%/);
   assert.match(report, /ownership-validated tenant simulation record/);
@@ -189,6 +197,62 @@ test("customer activation advances only from persisted product milestones", () =
   assert.equal(
     buildWorkspaceActivation({ ...workspace, workspaceMode: "sample" }),
     null,
+  );
+});
+
+test("observed runner evidence requires a bounded destroyed environment attestation", () => {
+  const payload = {
+    action: "observe",
+    projectId: "proj_verified_123",
+    scenario: "database",
+    fingerprint: "scn_database_800ms_v1",
+    seed: "ci_seed_12345",
+    environment: {
+      id: "wm-ci-environment-123",
+      destroyedAt: "2026-07-14T03:30:00Z",
+    },
+    journey: {
+      runner: "playwright",
+      name: "checkout",
+      startedAt: "2026-07-14T03:27:00Z",
+      endedAt: "2026-07-14T03:29:00Z",
+    },
+    before: {
+      resilienceScore: 38,
+      errorRate: 21.4,
+      latencyMs: 3190,
+      journeySuccess: 54,
+      serviceHealth: 57,
+    },
+    after: {
+      resilienceScore: 88,
+      errorRate: 1.2,
+      latencyMs: 734,
+      journeySuccess: 98,
+      serviceHealth: 96,
+    },
+  };
+  const normalized = normalizeObservedRun(
+    payload,
+    Date.parse("2026-07-14T03:31:00Z"),
+  );
+  assert.equal(normalized.durationSeconds, 120);
+  assert.equal(normalized.journeyRunner, "playwright");
+  assert.equal(normalized.after.serviceHealth, 96);
+  assert.throws(
+    () => normalizeObservedRun({ ...payload, fingerprint: "wrong_fingerprint" }),
+    /does not match/,
+  );
+  assert.throws(
+    () =>
+      normalizeObservedRun({
+        ...payload,
+        environment: {
+          ...payload.environment,
+          destroyedAt: "2026-07-14T04:00:00Z",
+        },
+      }, Date.parse("2026-07-14T03:31:00Z")),
+    /cannot be in the future/,
   );
 });
 

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `simulation_runs_replay_identity_idx` ON `simulation_runs` (`project_id`,`scenario_fingerprint`,`seed`,`evidence_kind`);

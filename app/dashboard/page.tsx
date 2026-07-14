@@ -3,6 +3,7 @@
 import type { CSSProperties, FormEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
 import "./dashboard.css";
+import "./observed.css";
 
 type Tab =
   | "overview"
@@ -1667,6 +1668,23 @@ export default function Dashboard() {
                           <code>{`{"action":"verify","runId":"run_id"}`}</code>{" "}
                           to replay the identical scenario after repair.
                         </p>
+                        <details className="api-observed">
+                          <summary>Submit observed Playwright evidence →</summary>
+                          <p>
+                            CI runners can submit bounded before/after telemetry only after the disposable environment is destroyed. The run is labeled observed and retains its environment attestation.
+                          </p>
+                          <pre><code>{`{
+  "action": "observe",
+  "projectId": "${data.projects[0]?.id || "proj_id"}",
+  "scenario": "database",
+  "fingerprint": "scn_database_800ms_v1",
+  "seed": "ci_run_20260714_001",
+  "environment": { "id": "wm-ci-8421", "destroyedAt": "2026-07-14T03:30:00Z" },
+  "journey": { "runner": "playwright", "name": "checkout", "startedAt": "2026-07-14T03:27:00Z", "endedAt": "2026-07-14T03:29:00Z" },
+  "before": { "resilienceScore": 38, "errorRate": 21.4, "latencyMs": 3190, "journeySuccess": 54, "serviceHealth": 57 },
+  "after": { "resilienceScore": 88, "errorRate": 1.2, "latencyMs": 734, "journeySuccess": 98, "serviceHealth": 96 }
+}`}</code></pre>
+                        </details>
                       </article>
                       <article className="saas-card api-keys">
                         <header>
