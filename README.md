@@ -38,6 +38,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Durable 14-day trials, calendar-month usage rollover, Stripe-aware access states, and server-enforced project, seat, simulation, and API-key entitlements
 - Durable support cases visible to the requester and workspace administrators
 - Identity-bound, one-time team invitation links with hashed secrets, expiry, revocation, pending-seat accounting, workspace switching, role changes, removals, rate limiting, and audit evidence
+- Durable Codex repair review queues with written approval evidence, enforced state transitions, residual-risk packets, role-gated decisions, and truthful draft-PR handoff status
 - Public trust, security, privacy, pilot terms, and support disclosures that distinguish implemented controls from planned certifications
 - Responsive product and sub-three-minute demonstration path
 

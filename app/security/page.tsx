@@ -99,7 +99,10 @@ export default function SecurityPage() {
             Failure scenarios preserve fingerprints and seeds for identical
             replay.
           </li>
-          <li>Repairs remain candidates until a human reviews them.</li>
+          <li>
+            Repairs remain candidates until an owner or administrator records a
+            review decision; pull-request handoff is blocked until approval.
+          </li>
           <li>Material actions create append-only tenant audit events.</li>
         </ul>
       </PolicySection>

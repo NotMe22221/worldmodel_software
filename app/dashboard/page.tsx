@@ -9,6 +9,7 @@ type Tab =
   | "projects"
   | "runs"
   | "reports"
+  | "repairs"
   | "integrations"
   | "api"
   | "readiness"
@@ -48,6 +49,35 @@ type Run = {
   latency_ms: number;
   journey_success: number;
   created_at: string;
+};
+type Repair = {
+  id: string;
+  run_id: string;
+  status: string;
+  title: string;
+  summary: string;
+  files_json: string;
+  tests_json: string;
+  risks_json: string;
+  created_by: string;
+  reviewer_email: string | null;
+  decision_note: string | null;
+  requested_at: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  pr_status: string;
+  branch_name: string | null;
+  pr_url: string | null;
+  pr_number: number | null;
+  updated_at: string;
+  scenario: string;
+  scenario_fingerprint: string;
+  before_score: number;
+  after_score: number;
+  verified_at: string;
+  project_name: string;
+  repository: string;
+  project_branch: string;
 };
 type Member = { email: string; role: string; created_at: string };
 type AvailableWorkspace = { id: string; name: string; role: string };
@@ -162,6 +192,7 @@ type Snapshot = {
   availableWorkspaces: AvailableWorkspace[];
   projects: Project[];
   runs: Run[];
+  repairs: Repair[];
   members: Member[];
   pendingInvitations: WorkspaceInvitation[];
   githubInstallations: GithubInstallation[];
@@ -187,6 +218,7 @@ const navItems: Array<{ id: Tab; label: string; icon: string }> = [
   { id: "projects", label: "Projects", icon: "◇" },
   { id: "runs", label: "Simulation runs", icon: "▶" },
   { id: "reports", label: "Reports", icon: "▤" },
+  { id: "repairs", label: "Repair reviews", icon: "✦" },
   { id: "integrations", label: "Integrations", icon: "⌘" },
   { id: "api", label: "Developer API", icon: "{ }" },
   { id: "readiness", label: "Launch readiness", icon: "✓" },
@@ -219,6 +251,17 @@ function dateLabel(value: string) {
   return Number.isNaN(date.getTime())
     ? "Just now"
     : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+function stringList(value: string) {
+  try {
+    const result = JSON.parse(value);
+    return Array.isArray(result) ? result.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+function repairStatus(value: string) {
+  return value.replaceAll("_", " ");
 }
 
 export default function Dashboard() {
@@ -384,6 +427,40 @@ export default function Dashboard() {
     } catch (reason) {
       setError(
         reason instanceof Error ? reason.message : "Unable to remove member",
+      );
+    } finally {
+      setCreating(false);
+    }
+  }
+  async function repairAction(
+    action: string,
+    proposalId: string,
+    note?: string,
+  ) {
+    setCreating(true);
+    setError("");
+    try {
+      const response = await fetch("/api/repairs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, proposalId, note }),
+      });
+      const result = await response.json();
+      if (!response.ok)
+        throw new Error(result.error || "Unable to update repair review");
+      await load();
+      const messages: Record<string, string> = {
+        "request-review": "Repair submitted for an administrator review.",
+        approve: "Repair approved with review evidence.",
+        "request-changes": "Changes requested; the repair must be resubmitted.",
+        "prepare-pr": "Draft pull request handoff prepared.",
+      };
+      setNotice(messages[action] || "Repair workflow updated.");
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to update repair review",
       );
     } finally {
       setCreating(false);
@@ -959,6 +1036,172 @@ export default function Dashboard() {
                       </button>
                     </article>
                   ))}
+              </section>
+            </>
+          )}
+          {tab === "repairs" && (
+            <>
+              <SectionHeader
+                eyebrow="HUMAN REVIEW"
+                title="Repair approval queue"
+                description="Codex candidates remain untrusted until a workspace reviewer evaluates the verified replay, residual risks, and exact handoff evidence."
+              />
+              <section className="repair-queue">
+                {data.repairs.map((repair) => (
+                  <article
+                    className="saas-card repair-review-card"
+                    key={repair.id}
+                  >
+                    <header>
+                      <div>
+                        <span>
+                          {repair.project_name} · {repair.scenario}
+                        </span>
+                        <b>{repair.title}</b>
+                      </div>
+                      <em className={`repair-state ${repair.status}`}>
+                        {repairStatus(repair.status)}
+                      </em>
+                    </header>
+                    <div className="repair-body">
+                      <p>{repair.summary}</p>
+                      <div className="repair-score">
+                        <span>VERIFIED REPLAY</span>
+                        <strong>{repair.before_score}</strong>
+                        <em>→</em>
+                        <strong>{repair.after_score}</strong>
+                        <code>{repair.scenario_fingerprint}</code>
+                      </div>
+                      <div className="repair-evidence">
+                        <section>
+                          <b>FILES</b>
+                          {stringList(repair.files_json).map((item) => (
+                            <code key={item}>{item}</code>
+                          ))}
+                        </section>
+                        <section>
+                          <b>CHECKS</b>
+                          {stringList(repair.tests_json).map((item) => (
+                            <span key={item}>✓ {item}</span>
+                          ))}
+                        </section>
+                        <section>
+                          <b>RESIDUAL RISKS</b>
+                          {stringList(repair.risks_json).map((item) => (
+                            <span key={item}>! {item}</span>
+                          ))}
+                        </section>
+                      </div>
+                      {repair.decision_note && (
+                        <blockquote>
+                          <b>Review evidence</b>
+                          <p>{repair.decision_note}</p>
+                          <small>
+                            {repair.approved_by ||
+                              repair.reviewer_email ||
+                              "Workspace reviewer"}{" "}
+                            ·{" "}
+                            {dateLabel(repair.approved_at || repair.updated_at)}
+                          </small>
+                        </blockquote>
+                      )}
+                      {repair.status === "pr_ready" && (
+                        <div className="pr-handoff">
+                          <b>
+                            {repair.pr_status === "ready_to_publish"
+                              ? "GitHub handoff ready"
+                              : "GitHub connection required"}
+                          </b>
+                          <code>{repair.branch_name}</code>
+                          <p>
+                            {repair.pr_status === "ready_to_publish"
+                              ? "The connected repository is authorized; the approved evidence packet is ready for publication."
+                              : "Connect and import this repository before publishing. No pull request has been falsely claimed."}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <footer>
+                      <button
+                        onClick={() =>
+                          (location.href = `/api/repairs?proposal=${encodeURIComponent(repair.id)}`)
+                        }
+                      >
+                        Download evidence ↓
+                      </button>
+                      {(repair.status === "ready_for_review" ||
+                        repair.status === "changes_requested") &&
+                        data.workspace.membership_role !== "viewer" && (
+                          <button
+                            className="primary"
+                            disabled={creating}
+                            onClick={() =>
+                              repairAction("request-review", repair.id)
+                            }
+                          >
+                            Submit for review →
+                          </button>
+                        )}
+                      {repair.status === "in_review" &&
+                        (data.workspace.membership_role === "owner" ||
+                          data.workspace.membership_role === "admin") && (
+                          <>
+                            <button
+                              disabled={creating}
+                              onClick={() => {
+                                const note = prompt(
+                                  "Describe the required change (10–1000 characters)",
+                                );
+                                if (note)
+                                  repairAction(
+                                    "request-changes",
+                                    repair.id,
+                                    note,
+                                  );
+                              }}
+                            >
+                              Request changes
+                            </button>
+                            <button
+                              className="primary"
+                              disabled={creating}
+                              onClick={() => {
+                                const note = prompt(
+                                  "Record approval evidence (10–1000 characters)",
+                                );
+                                if (note)
+                                  repairAction("approve", repair.id, note);
+                              }}
+                            >
+                              Approve repair ✓
+                            </button>
+                          </>
+                        )}
+                      {repair.status === "approved" &&
+                        (data.workspace.membership_role === "owner" ||
+                          data.workspace.membership_role === "admin") && (
+                          <button
+                            className="primary"
+                            disabled={creating}
+                            onClick={() =>
+                              repairAction("prepare-pr", repair.id)
+                            }
+                          >
+                            Prepare draft PR →
+                          </button>
+                        )}
+                    </footer>
+                  </article>
+                ))}
+                {!data.repairs.length && (
+                  <section className="saas-card access-empty">
+                    <b>No verified repair candidates</b>
+                    <p>
+                      Verify an identical scenario replay to create a reviewable
+                      repair proposal.
+                    </p>
+                  </section>
+                )}
               </section>
             </>
           )}
@@ -1567,58 +1810,81 @@ export default function Dashboard() {
                     (data.workspace.membership_role === "owner" ||
                       (data.workspace.membership_role === "admin" &&
                         member.role !== "admin"));
-                  return <div key={member.email}>
-                    <span className="member-name">
-                      <i>{member.email.slice(0, 2).toUpperCase()}</i>
-                      <b>{member.email}</b>
-                    </span>
-                    {canManage ? (
-                      <select
-                        className="member-role-select"
-                        value={member.role}
-                        disabled={creating}
-                        onChange={(event) =>
-                          updateMemberRole(member.email, event.target.value)
-                        }
-                      >
-                        {data.workspace.membership_role === "owner" && (
-                          <option value="admin">Admin</option>
-                        )}
-                        <option value="member">Member</option>
-                        <option value="viewer">Viewer</option>
-                      </select>
-                    ) : (
-                      <span className="role-label">{member.role}</span>
-                    )}
-                    <span>{dateLabel(member.created_at)}</span>
-                    {canManage ? (
-                      <button
-                        className="remove-member"
-                        disabled={creating}
-                        onClick={() => removeMember(member.email)}
-                      >
-                        Remove
-                      </button>
-                    ) : <span />}
-                  </div>;
+                  return (
+                    <div key={member.email}>
+                      <span className="member-name">
+                        <i>{member.email.slice(0, 2).toUpperCase()}</i>
+                        <b>{member.email}</b>
+                      </span>
+                      {canManage ? (
+                        <select
+                          className="member-role-select"
+                          value={member.role}
+                          disabled={creating}
+                          onChange={(event) =>
+                            updateMemberRole(member.email, event.target.value)
+                          }
+                        >
+                          {data.workspace.membership_role === "owner" && (
+                            <option value="admin">Admin</option>
+                          )}
+                          <option value="member">Member</option>
+                          <option value="viewer">Viewer</option>
+                        </select>
+                      ) : (
+                        <span className="role-label">{member.role}</span>
+                      )}
+                      <span>{dateLabel(member.created_at)}</span>
+                      {canManage ? (
+                        <button
+                          className="remove-member"
+                          disabled={creating}
+                          onClick={() => removeMember(member.email)}
+                        >
+                          Remove
+                        </button>
+                      ) : (
+                        <span />
+                      )}
+                    </div>
+                  );
                 })}
               </section>
               {data.pendingInvitations.length > 0 && (
                 <section className="saas-card pending-invitations">
                   <header>
-                    <div><span>PENDING INVITATIONS</span><b>Seats are reserved until accepted, revoked, or expired.</b></div>
+                    <div>
+                      <span>PENDING INVITATIONS</span>
+                      <b>
+                        Seats are reserved until accepted, revoked, or expired.
+                      </b>
+                    </div>
                   </header>
                   {data.pendingInvitations.map((invitation) => (
                     <div key={invitation.id}>
-                      <span><b>{invitation.email}</b><small>Invited by {invitation.invited_by}</small></span>
+                      <span>
+                        <b>{invitation.email}</b>
+                        <small>Invited by {invitation.invited_by}</small>
+                      </span>
                       <span className="role-label">{invitation.role}</span>
                       <span>Expires {dateLabel(invitation.expires_at)}</span>
-                      <button disabled={creating} onClick={() => revokeInvitation(invitation.id)}>Revoke</button>
+                      <button
+                        disabled={creating}
+                        onClick={() => revokeInvitation(invitation.id)}
+                      >
+                        Revoke
+                      </button>
                     </div>
                   ))}
                 </section>
               )}
-              <aside className="team-access-boundary"><b>Private pilot access</b><p>Send the one-time link securely. The invited email must also be allowed through the private deployment sign-in gate.</p></aside>
+              <aside className="team-access-boundary">
+                <b>Private pilot access</b>
+                <p>
+                  Send the one-time link securely. The invited email must also
+                  be allowed through the private deployment sign-in gate.
+                </p>
+              </aside>
             </>
           )}
           {tab === "support" && (
@@ -1884,42 +2150,81 @@ export default function Dashboard() {
           >
             <button
               className="saas-modal-close"
-              onClick={() => { setShowInvite(false); setNewInviteLink(""); }}
+              onClick={() => {
+                setShowInvite(false);
+                setNewInviteLink("");
+              }}
               aria-label="Close invite dialog"
             >
               ×
             </button>
             <span>WORKSPACE ACCESS</span>
             <h2 id="invite-title">Invite a team member</h2>
-            <p>Create an identity-bound, one-time link that expires in seven days.</p>
-            {newInviteLink ? <div className="invite-secret"><b>COPY THIS LINK NOW</b><p>It is shown once and should be delivered only to the invited person.</p><code>{newInviteLink}</code><button onClick={() => navigator.clipboard.writeText(newInviteLink)}>Copy invitation link</button><button className="invite-done" onClick={() => { setShowInvite(false); setNewInviteLink(""); }}>Done</button></div> : <form onSubmit={invite}>
-              <label>
-                Email address
-                <input
-                  name="email"
-                  type="email"
-                  required
-                  placeholder="engineer@company.com"
-                />
-              </label>
-              <label>
-                Role
-                <select name="role" defaultValue="member">
-                  <option value="member">Member</option>
-                  {data.workspace.membership_role === "owner" && <option value="admin">Admin</option>}
-                  <option value="viewer">Viewer</option>
-                </select>
-              </label>
-              {error && <p className="form-error">{error}</p>}
-              <div>
-                <button type="button" onClick={() => { setShowInvite(false); setNewInviteLink(""); }}>
-                  Cancel
+            <p>
+              Create an identity-bound, one-time link that expires in seven
+              days.
+            </p>
+            {newInviteLink ? (
+              <div className="invite-secret">
+                <b>COPY THIS LINK NOW</b>
+                <p>
+                  It is shown once and should be delivered only to the invited
+                  person.
+                </p>
+                <code>{newInviteLink}</code>
+                <button
+                  onClick={() => navigator.clipboard.writeText(newInviteLink)}
+                >
+                  Copy invitation link
                 </button>
-                <button className="primary" disabled={creating}>
-                  {creating ? "Creating…" : "Create invitation →"}
+                <button
+                  className="invite-done"
+                  onClick={() => {
+                    setShowInvite(false);
+                    setNewInviteLink("");
+                  }}
+                >
+                  Done
                 </button>
               </div>
-            </form>}
+            ) : (
+              <form onSubmit={invite}>
+                <label>
+                  Email address
+                  <input
+                    name="email"
+                    type="email"
+                    required
+                    placeholder="engineer@company.com"
+                  />
+                </label>
+                <label>
+                  Role
+                  <select name="role" defaultValue="member">
+                    <option value="member">Member</option>
+                    {data.workspace.membership_role === "owner" && (
+                      <option value="admin">Admin</option>
+                    )}
+                    <option value="viewer">Viewer</option>
+                  </select>
+                </label>
+                {error && <p className="form-error">{error}</p>}
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowInvite(false);
+                      setNewInviteLink("");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button className="primary" disabled={creating}>
+                    {creating ? "Creating…" : "Create invitation →"}
+                  </button>
+                </div>
+              </form>
+            )}
           </section>
         </div>
       )}

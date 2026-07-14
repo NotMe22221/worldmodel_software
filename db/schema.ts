@@ -50,6 +50,32 @@ export const simulationRuns = sqliteTable("simulation_runs", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const repairProposals = sqliteTable("repair_proposals", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  runId: text("run_id").notNull().references(() => simulationRuns.id),
+  status: text("status").notNull().default("ready_for_review"),
+  title: text("title").notNull(),
+  summary: text("summary").notNull(),
+  filesJson: text("files_json").notNull().default("[]"),
+  testsJson: text("tests_json").notNull().default("[]"),
+  risksJson: text("risks_json").notNull().default("[]"),
+  createdBy: text("created_by").notNull(),
+  reviewerEmail: text("reviewer_email"),
+  decisionNote: text("decision_note"),
+  requestedAt: text("requested_at"),
+  approvedBy: text("approved_by"),
+  approvedAt: text("approved_at"),
+  prStatus: text("pr_status").notNull().default("not_requested"),
+  branchName: text("branch_name"),
+  prUrl: text("pr_url"),
+  prNumber: integer("pr_number"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("repair_proposals_run_idx").on(table.runId),
+]);
+
 export const workspaceMembers = sqliteTable("workspace_members", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   workspaceId: text("workspace_id").notNull().references(() => workspaces.id),

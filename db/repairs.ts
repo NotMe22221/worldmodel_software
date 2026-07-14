@@ -1,0 +1,229 @@
+import { recordAudit } from "./audit";
+import { getSaasSnapshot, requireRole, requireWriteEntitlement } from "./saas";
+import { repairTransition } from "../worldmodel/repair-workflow.mjs";
+
+type RepairStatus =
+  | "ready_for_review"
+  | "in_review"
+  | "changes_requested"
+  | "approved"
+  | "pr_ready";
+
+async function getD1() {
+  const { env } = await import("cloudflare:workers");
+  if (!env.DB) throw new Error("D1 binding DB is unavailable");
+  return env.DB;
+}
+
+function findRepair(
+  snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>,
+  proposalId: string,
+) {
+  const repair = snapshot.repairs.find(
+    (candidate) => String(candidate.id) === proposalId,
+  );
+  if (!repair) throw new Error("Repair proposal not found");
+  return repair as Record<string, unknown>;
+}
+
+export async function requestRepairReview(
+  email: string,
+  proposalId: string,
+  reviewerEmail?: string,
+) {
+  const snapshot = await getSaasSnapshot(email);
+  requireRole(snapshot, ["owner", "admin", "member"]);
+  requireWriteEntitlement(snapshot.entitlements);
+  const repair = findRepair(snapshot, proposalId);
+  try {
+    repairTransition(String(repair.status), "request-review");
+  } catch {
+    throw new Error("This repair is not ready to enter review");
+  }
+  let reviewer: string | null = null;
+  if (reviewerEmail) {
+    const member = snapshot.members.find(
+      (candidate) =>
+        String(candidate.email).toLowerCase() === reviewerEmail.toLowerCase(),
+    );
+    if (!member || !["owner", "admin"].includes(String(member.role)))
+      throw new Error(
+        "The assigned reviewer must be a workspace owner or administrator",
+      );
+    reviewer = reviewerEmail.toLowerCase();
+  }
+  const db = await getD1();
+  await db
+    .prepare(
+      "UPDATE repair_proposals SET status = 'in_review', reviewer_email = ?, decision_note = NULL, requested_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?",
+    )
+    .bind(reviewer, proposalId, snapshot.workspace.id)
+    .run();
+  await recordAudit({
+    workspaceId: String(snapshot.workspace.id),
+    actorEmail: email,
+    action: "repair.review_requested",
+    targetType: "repair_proposal",
+    targetId: proposalId,
+    summary: `Submitted ${repair.title} for review`,
+    metadata: { reviewer },
+  });
+  return getRepairPacket(email, proposalId);
+}
+
+async function decideRepair(
+  email: string,
+  proposalId: string,
+  decision: "approved" | "changes_requested",
+  note: string,
+) {
+  const snapshot = await getSaasSnapshot(email);
+  requireRole(snapshot, ["owner", "admin"]);
+  requireWriteEntitlement(snapshot.entitlements);
+  const repair = findRepair(snapshot, proposalId);
+  try {
+    repairTransition(
+      String(repair.status),
+      decision === "approved" ? "approve" : "request-changes",
+    );
+  } catch {
+    throw new Error("This repair is not awaiting a review decision");
+  }
+  if (
+    repair.reviewer_email &&
+    String(repair.reviewer_email).toLowerCase() !== email.toLowerCase()
+  )
+    throw new Error("This repair is assigned to another reviewer");
+  if (note.trim().length < 10 || note.trim().length > 1000)
+    throw new Error("A review note between 10 and 1000 characters is required");
+  const db = await getD1();
+  await db
+    .prepare(
+      "UPDATE repair_proposals SET status = ?, decision_note = ?, approved_by = CASE WHEN ? = 'approved' THEN ? ELSE NULL END, approved_at = CASE WHEN ? = 'approved' THEN CURRENT_TIMESTAMP ELSE NULL END, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?",
+    )
+    .bind(
+      decision,
+      note.trim(),
+      decision,
+      email.toLowerCase(),
+      decision,
+      proposalId,
+      snapshot.workspace.id,
+    )
+    .run();
+  await recordAudit({
+    workspaceId: String(snapshot.workspace.id),
+    actorEmail: email,
+    action:
+      decision === "approved" ? "repair.approved" : "repair.changes_requested",
+    targetType: "repair_proposal",
+    targetId: proposalId,
+    summary:
+      decision === "approved"
+        ? `Approved ${repair.title}`
+        : `Requested changes to ${repair.title}`,
+    metadata: { note: note.trim() },
+  });
+  return getRepairPacket(email, proposalId);
+}
+
+export function approveRepair(email: string, proposalId: string, note: string) {
+  return decideRepair(email, proposalId, "approved", note);
+}
+
+export function requestRepairChanges(
+  email: string,
+  proposalId: string,
+  note: string,
+) {
+  return decideRepair(email, proposalId, "changes_requested", note);
+}
+
+export async function prepareRepairPullRequest(
+  email: string,
+  proposalId: string,
+) {
+  const snapshot = await getSaasSnapshot(email);
+  requireRole(snapshot, ["owner", "admin"]);
+  requireWriteEntitlement(snapshot.entitlements);
+  const repair = findRepair(snapshot, proposalId);
+  try {
+    repairTransition(String(repair.status), "prepare-pr");
+  } catch {
+    throw new Error(
+      "The repair must be approved before a pull request can be prepared",
+    );
+  }
+  const db = await getD1();
+  const repository = await db
+    .prepare(
+      "SELECT gr.repository_id FROM github_repositories gr JOIN github_installations gi ON gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1",
+    )
+    .bind(snapshot.workspace.id, repair.repository)
+    .first();
+  const branchName = `worldmodel/${String(repair.run_id)
+    .replace(/^run_/, "repair-")
+    .replace(/[^a-zA-Z0-9_-]/g, "-")
+    .slice(0, 70)}`;
+  const prStatus = repository ? "ready_to_publish" : "connection_required";
+  await db
+    .prepare(
+      "UPDATE repair_proposals SET status = 'pr_ready', pr_status = ?, branch_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?",
+    )
+    .bind(prStatus, branchName, proposalId, snapshot.workspace.id)
+    .run();
+  await recordAudit({
+    workspaceId: String(snapshot.workspace.id),
+    actorEmail: email,
+    action: "repair.pr_prepared",
+    targetType: "repair_proposal",
+    targetId: proposalId,
+    summary: `Prepared draft pull request handoff for ${repair.title}`,
+    metadata: { branchName, prStatus },
+  });
+  return getRepairPacket(email, proposalId);
+}
+
+export async function getRepairPacket(email: string, proposalId: string) {
+  const snapshot = await getSaasSnapshot(email);
+  const repair = findRepair(snapshot, proposalId);
+  return {
+    id: repair.id,
+    workspace: { id: snapshot.workspace.id, name: snapshot.workspace.name },
+    project: {
+      name: repair.project_name,
+      repository: repair.repository,
+      baseBranch: repair.project_branch,
+    },
+    scenario: {
+      runId: repair.run_id,
+      name: repair.scenario,
+      fingerprint: repair.scenario_fingerprint,
+      verifiedAt: repair.verified_at,
+      beforeScore: repair.before_score,
+      afterScore: repair.after_score,
+    },
+    repair: {
+      title: repair.title,
+      summary: repair.summary,
+      files: JSON.parse(String(repair.files_json)),
+      tests: JSON.parse(String(repair.tests_json)),
+      residualRisks: JSON.parse(String(repair.risks_json)),
+    },
+    review: {
+      status: repair.status as RepairStatus,
+      requestedAt: repair.requested_at,
+      reviewer: repair.reviewer_email,
+      decisionNote: repair.decision_note,
+      approvedBy: repair.approved_by,
+      approvedAt: repair.approved_at,
+    },
+    pullRequest: {
+      status: repair.pr_status,
+      branch: repair.branch_name,
+      url: repair.pr_url,
+      number: repair.pr_number,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+}

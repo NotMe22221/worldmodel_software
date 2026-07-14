@@ -11,6 +11,7 @@ import { launchReadiness } from "../server/readiness.ts";
 import { digestApiToken, generateApiTokenMaterial } from "../worldmodel/api-key-security.mjs";
 import { resolveEntitlements, usagePeriod } from "../worldmodel/entitlements.mjs";
 import { digestInvitationSecret, generateInvitationSecret } from "../worldmodel/invitation-security.mjs";
+import { repairCanTransition, repairTransition } from "../worldmodel/repair-workflow.mjs";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(await readFile(new URL("../sample-app/worldmodel.manifest.json", import.meta.url)));
@@ -118,6 +119,16 @@ test("workspace invitations use unique one-time secrets and irreversible stored 
   const digest = await digestInvitationSecret(first);
   assert.match(digest, /^[a-f0-9]{64}$/);
   assert.ok(!digest.includes(first));
+});
+
+test("repair review state machine gates decisions and pull request handoff", () => {
+  assert.equal(repairTransition("ready_for_review", "request-review"), "in_review");
+  assert.equal(repairTransition("changes_requested", "request-review"), "in_review");
+  assert.equal(repairTransition("in_review", "approve"), "approved");
+  assert.equal(repairTransition("in_review", "request-changes"), "changes_requested");
+  assert.equal(repairTransition("approved", "prepare-pr"), "pr_ready");
+  assert.equal(repairCanTransition("ready_for_review", "prepare-pr"), false);
+  assert.throws(() => repairTransition("pr_ready", "approve"), /not allowed/);
 });
 
 test("commercial entitlements follow trial, paid, delinquent, and canceled lifecycle states", () => {
