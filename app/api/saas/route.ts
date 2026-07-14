@@ -14,7 +14,7 @@ function identity(request: Request) {
 
 function failure(error: unknown, fallback: string) {
   const message = error instanceof Error ? error.message : fallback;
-  const status = message.includes("role") ? 403 : message.includes("not found") ? 404 : message.includes("clean customer workspace") || message.includes("Sample repair") ? 409 : message.includes("plan") || message.includes("Payment") ? 402 : message.includes("limit") ? 429 : 500;
+  const status = message.includes("role") ? 403 : message.includes("not found") ? 404 : message.includes("GitHub request failed") ? 502 : message.includes("clean customer workspace") || message.includes("Sample repair") ? 409 : message.includes("plan") || message.includes("Payment") ? 402 : message.includes("limit") ? 429 : 500;
   return Response.json({ error: message }, { status });
 }
 

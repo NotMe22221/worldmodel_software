@@ -141,6 +141,39 @@ export async function installationRepositories(installationId: string) {
   return result.repositories;
 }
 
+export async function repositoryTree(
+  installationId: string,
+  fullName: string,
+  branch: string,
+) {
+  const token = await installationToken(installationId);
+  return repositoryTreeWithToken(fullName, branch, token);
+}
+
+export async function repositoryTreeWithToken(
+  fullName: string,
+  branch: string,
+  token: string,
+) {
+  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(fullName);
+  if (!match) throw new Error("GitHub repository name is invalid");
+  if (!/^[A-Za-z0-9._/-]{1,120}$/.test(branch))
+    throw new Error("GitHub branch name is invalid");
+  const result = await githubFetch<{
+    truncated: boolean;
+    tree: Array<{ path: string; type: string; size?: number }>;
+  }>(
+    `https://api.github.com/repos/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+    token,
+  );
+  return {
+    truncated: Boolean(result.truncated),
+    entries: result.tree
+      .filter((entry) => entry.type === "blob" || entry.type === "tree")
+      .slice(0, 5000),
+  };
+}
+
 function standardBase64(value: string) {
   const bytes = new TextEncoder().encode(value);
   let binary = "";

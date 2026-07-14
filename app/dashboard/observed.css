@@ -29,3 +29,17 @@
   background: #fff;
   color: #246f4b;
 }
+
+.project-map-preview {
+  margin: 10px 0 0;
+  border: 1px solid #d7ddd9;
+  border-radius: 6px;
+  padding: 9px;
+}
+.project-map-preview summary { color: #246f4b; cursor: pointer; font-size: 8px; font-weight: 700; }
+.project-map-preview > small { display: block; color: #7a8680; font-size: 6px; margin: 7px 0; }
+.project-map-preview ul { list-style: none; max-height: 190px; overflow: auto; padding: 0; }
+.project-map-preview li { display: flex; justify-content: space-between; gap: 8px; border-top: 1px solid #edf0ee; padding: 7px 0; }
+.project-map-preview li span { display: flex; flex-direction: column; }
+.project-map-preview li b { font-size: 7px; }
+.project-map-preview li small, .project-map-preview li em { color: #849089; font-size: 6px; font-style: normal; }

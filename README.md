@@ -36,6 +36,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Scoped and rate-limited CI ingestion for idempotent observed Playwright evidence with bounded metrics, scenario-contract validation, environment teardown attestations, and immediate key revocation
 - Authenticated per-project GitHub Actions workflow downloads that reference CI-managed secrets, require a customer-owned disposable-test command, and submit the resulting evidence artifact without embedding credentials
 - Customer activation and operator conversion KPIs that count modeled planning runs separately and require observed evidence for the verification milestone
+- Installation-token GitHub tree scanning that persists an evidence-linked component graph, mapping summary, truncation disclosure, and scan timestamp for each verified project
 - Durable scenario fingerprints, replay evidence, metered simulation minutes, and tenant-isolated report downloads
 - GitHub App install/OAuth ownership validation, installation-scoped repository sync, and repository import
 - Stripe-hosted subscription checkout with signed, idempotent entitlement webhooks

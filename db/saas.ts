@@ -58,8 +58,12 @@ async function ensureProjectProvenanceColumns(db: Awaited<ReturnType<typeof getD
   const existing = new Set(columns.results.map((column) => column.name));
   if (!existing.has("source_kind")) await db.prepare("ALTER TABLE projects ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'manual'").run();
   if (!existing.has("repository_verified")) await db.prepare("ALTER TABLE projects ADD COLUMN repository_verified INTEGER NOT NULL DEFAULT 0").run();
+  if (!existing.has("graph_json")) await db.prepare("ALTER TABLE projects ADD COLUMN graph_json TEXT NOT NULL DEFAULT '{\"version\":1,\"nodes\":[],\"edges\":[]}'").run();
+  if (!existing.has("scan_summary")) await db.prepare("ALTER TABLE projects ADD COLUMN scan_summary TEXT").run();
+  if (!existing.has("scanned_at")) await db.prepare("ALTER TABLE projects ADD COLUMN scanned_at TEXT").run();
   await db.prepare("UPDATE projects SET source_kind = 'sample', repository_verified = 0 WHERE repository = 'shopstream/demo-store' AND id LIKE 'proj_checkout_%'").run();
   await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1 WHERE EXISTS (SELECT 1 FROM github_repositories gr WHERE gr.workspace_id = projects.workspace_id AND lower(gr.full_name) = lower(projects.repository) AND gr.selected = 1)").run();
+  await db.prepare("UPDATE projects SET status = 'unverified' WHERE source_kind = 'manual' AND scanned_at IS NULL").run();
 }
 
 async function ensureWorkspaceLifecycleColumns(db: Awaited<ReturnType<typeof getD1>>) {
@@ -91,7 +95,7 @@ export async function ensureSaasSchema() {
   const db = await getD1();
   await db.batch([
     db.prepare("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_email TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'trial', simulation_minutes INTEGER NOT NULL DEFAULT 0, monthly_limit INTEGER NOT NULL DEFAULT 500, workspace_mode TEXT NOT NULL DEFAULT 'customer', trial_ends_at TEXT, usage_period_start TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, repository TEXT NOT NULL, branch TEXT NOT NULL DEFAULT 'main', source_kind TEXT NOT NULL DEFAULT 'manual', repository_verified INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'ready', resilience_score INTEGER NOT NULL DEFAULT 0, service_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, repository TEXT NOT NULL, branch TEXT NOT NULL DEFAULT 'main', source_kind TEXT NOT NULL DEFAULT 'manual', repository_verified INTEGER NOT NULL DEFAULT 0, graph_json TEXT NOT NULL DEFAULT '{\"version\":1,\"nodes\":[],\"edges\":[]}', scan_summary TEXT, scanned_at TEXT, status TEXT NOT NULL DEFAULT 'ready', resilience_score INTEGER NOT NULL DEFAULT 0, service_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS simulation_runs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), scenario TEXT NOT NULL, status TEXT NOT NULL, before_score INTEGER NOT NULL, after_score INTEGER, error_rate TEXT NOT NULL, latency_ms INTEGER NOT NULL, journey_success INTEGER NOT NULL, duration_seconds INTEGER NOT NULL, evidence_kind TEXT NOT NULL DEFAULT 'modeled', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS repair_proposals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), run_id TEXT NOT NULL REFERENCES simulation_runs(id), status TEXT NOT NULL DEFAULT 'ready_for_review', title TEXT NOT NULL, summary TEXT NOT NULL, files_json TEXT NOT NULL DEFAULT '[]', tests_json TEXT NOT NULL DEFAULT '[]', risks_json TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, reviewer_email TEXT, decision_note TEXT, requested_at TEXT, approved_by TEXT, approved_at TEXT, pr_status TEXT NOT NULL DEFAULT 'not_requested', branch_name TEXT, pr_url TEXT, pr_number INTEGER, pr_error TEXT, published_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS repair_proposals_run_idx ON repair_proposals(run_id)"),
@@ -266,7 +270,7 @@ export async function createProject(email: string, input: { name: string; reposi
   const db = await getD1();
   const sourceKind = input.sourceKind === "github" ? "github" : "manual";
   const repositoryVerified = sourceKind === "github" && input.repositoryVerified === true;
-  await db.prepare("INSERT INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, snapshot.workspace.id, input.name, input.repository, input.branch, sourceKind, repositoryVerified ? 1 : 0, "scanning", 0, 0).run();
+  await db.prepare("INSERT INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, snapshot.workspace.id, input.name, input.repository, input.branch, sourceKind, repositoryVerified ? 1 : 0, sourceKind === "github" ? "scanning" : "unverified", 0, 0).run();
   await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "project.created", targetType: "project", targetId: id, summary: `Connected ${input.repository}`, metadata: { branch: input.branch, sourceKind, repositoryVerified } });
   return db.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
 }

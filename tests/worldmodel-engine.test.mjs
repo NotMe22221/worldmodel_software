@@ -13,6 +13,7 @@ import { formatVerificationReport } from "../worldmodel/verification-report.mjs"
 import { buildWorkspaceActivation } from "../worldmodel/activation.mjs";
 import { normalizeObservedRun } from "../worldmodel/observed-run.mjs";
 import { generateRunnerWorkflow } from "../worldmodel/runner-workflow.mjs";
+import { buildRepositoryGraph } from "../worldmodel/repository-graph.mjs";
 import { createHmac } from "node:crypto";
 import {
   createStripePortalWithKey,
@@ -21,6 +22,7 @@ import {
 import {
   authorizedInstallation,
   publishGithubDraftEvidenceWithToken,
+  repositoryTreeWithToken,
 } from "../server/github.ts";
 import { safeCsvCell } from "../worldmodel/safe-csv.mjs";
 import { launchReadiness } from "../server/readiness.ts";
@@ -293,6 +295,67 @@ test("runner workflow is tenant-project bound and contains no embedded secret", 
       }),
     /API origin is invalid/,
   );
+});
+
+test("GitHub tree scanner builds an evidence-linked component graph", () => {
+  const graph = buildRepositoryGraph(
+    [
+      { path: "package.json" },
+      { path: "apps/web/package.json" },
+      { path: "services/checkout/package.json" },
+      { path: "services/checkout/src/index.ts" },
+      { path: "packages/shared/package.json" },
+      { path: "prisma/schema.prisma" },
+      { path: "playwright.config.ts" },
+      { path: "e2e/checkout.spec.ts" },
+    ],
+    { repository: "acme/store", branch: "main", truncated: false },
+  );
+  assert.equal(graph.source, "github_tree");
+  assert.equal(graph.repository, "acme/store");
+  assert.ok(graph.nodes.some((node) => node.path === "services/checkout"));
+  assert.ok(graph.nodes.some((node) => node.kind === "datastore"));
+  assert.ok(graph.nodes.some((node) => node.kind === "journey"));
+  assert.ok(graph.nodes.every((node) => node.evidence.length > 0));
+  assert.equal(graph.edges.length, graph.nodes.length - 1);
+  const bounded = buildRepositoryGraph(
+    Array.from({ length: 400 }, (_, index) => ({
+      path: `services/service-${index}/package.json`,
+    })),
+  );
+  assert.equal(bounded.nodes.length, 250);
+});
+
+test("GitHub tree fetch uses installation credentials and bounded tree entries", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    let request;
+    globalThis.fetch = async (url, init) => {
+      request = { url: String(url), init };
+      return new Response(
+        JSON.stringify({
+          truncated: false,
+          tree: [
+            { path: "package.json", type: "blob" },
+            { path: "src", type: "tree" },
+            { path: "ignored", type: "commit" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const tree = await repositoryTreeWithToken(
+      "acme/store",
+      "main",
+      "installation-token",
+    );
+    assert.match(request.url, /repos\/acme\/store\/git\/trees\/main\?recursive=1/);
+    assert.equal(request.init.headers.authorization, "Bearer installation-token");
+    assert.deepEqual(tree.entries.map((entry) => entry.path), ["package.json", "src"]);
+    assert.equal(tree.truncated, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("Stripe webhook verification accepts only a fresh matching raw-body signature", async () => {

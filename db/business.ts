@@ -2,6 +2,8 @@ import { createProject, ensureSaasSchema, getSaasSnapshot, requireRole } from ".
 import type { GithubInstallation, GithubRepository } from "../server/github";
 import { recordAudit } from "./audit";
 import { planCatalog } from "../worldmodel/entitlements.mjs";
+import { repositoryTree } from "../server/github";
+import { buildRepositoryGraph } from "../worldmodel/repository-graph.mjs";
 
 async function getD1() {
   const { env } = await import("cloudflare:workers");
@@ -52,19 +54,25 @@ export async function importGithubRepository(email: string, repositoryId: string
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin", "member"]);
   const db = await getD1();
-  const repository = await db.prepare("SELECT repository_id, full_name, default_branch FROM github_repositories WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).first<{ repository_id: string; full_name: string; default_branch: string }>();
+  const repository = await db.prepare("SELECT repository_id, installation_id, full_name, default_branch FROM github_repositories WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).first<{ repository_id: string; installation_id: string; full_name: string; default_branch: string }>();
   if (!repository) throw new Error("GitHub repository was not found in this workspace");
+  const tree = await repositoryTree(repository.installation_id, repository.full_name, repository.default_branch);
+  const graph = buildRepositoryGraph(tree.entries, { repository: repository.full_name, branch: repository.default_branch, truncated: tree.truncated });
+  const graphJson = JSON.stringify(graph);
+  const scanSummary = `${graph.nodes.length} components from ${graph.scannedPathCount} repository paths${graph.truncated ? " (GitHub tree truncated)" : ""}`;
   const existing = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? AND lower(repository) = lower(?) LIMIT 1").bind(snapshot.workspace.id, repository.full_name).first();
   if (existing) {
-    await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(existing.id, snapshot.workspace.id).run();
+    await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1, graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, existing.id, snapshot.workspace.id).run();
     await db.prepare("UPDATE github_repositories SET selected = 1 WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).run();
+    await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "repository.mapped", targetType: "project", targetId: String(existing.id), summary: `Mapped ${graph.nodes.length} components from ${repository.full_name}`, metadata: { scannedPathCount: graph.scannedPathCount, truncated: graph.truncated } });
     return db.prepare("SELECT * FROM projects WHERE id = ?").bind(existing.id).first();
   }
   const name = repository.full_name.split("/").pop()?.replaceAll("-", " ") || repository.full_name;
   const project = await createProject(email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch, sourceKind: "github", repositoryVerified: true });
+  await db.prepare("UPDATE projects SET graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, project?.id, snapshot.workspace.id).run();
   await db.prepare("UPDATE github_repositories SET selected = 1 WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).run();
-  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "repository.imported", targetType: "github_repository", targetId: repositoryId, summary: `Imported ${repository.full_name} from GitHub` });
-  return project;
+  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "repository.imported", targetType: "github_repository", targetId: repositoryId, summary: `Imported and mapped ${repository.full_name} from GitHub`, metadata: { projectId: project?.id, componentCount: graph.nodes.length, scannedPathCount: graph.scannedPathCount, truncated: graph.truncated } });
+  return db.prepare("SELECT * FROM projects WHERE id = ?").bind(project?.id).first();
 }
 
 export async function billingContext(email: string) {

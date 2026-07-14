@@ -37,6 +37,9 @@ type Project = {
   branch: string;
   source_kind: "sample" | "manual" | "github";
   repository_verified: number;
+  graph_json: string;
+  scan_summary: string | null;
+  scanned_at: string | null;
   status: string;
   resilience_score: number;
   service_count: number;
@@ -270,7 +273,22 @@ function statusLabel(status: string) {
       ? "Needs repair"
       : status === "scanning"
         ? "Scanning"
+        : status === "unverified"
+          ? "Unverified"
         : "Ready";
+}
+function mappedNodes(project: Project) {
+  try {
+    const graph = JSON.parse(project.graph_json || "{}");
+    return Array.isArray(graph.nodes)
+      ? graph.nodes.filter(
+          (node: unknown) =>
+            Boolean(node) && typeof (node as { name?: unknown }).name === "string",
+        ) as Array<{ id: string; name: string; kind: string; confidence: string; evidence: string[] }>
+      : [];
+  } catch {
+    return [];
+  }
 }
 function dateLabel(value: string) {
   const date = new Date(value);
@@ -1082,16 +1100,31 @@ export default function Dashboard() {
                       </div>
                       <div>
                         <dt>Services</dt>
-                        <dd>{project.service_count || "Scanning"}</dd>
+                        <dd>{project.service_count || (project.status === "unverified" ? "Not mapped" : "Scanning")}</dd>
                       </div>
                       <div>
                         <dt>Branch</dt>
                         <dd>{project.branch}</dd>
                       </div>
                     </dl>
-                    <button onClick={() => (location.href = "/")}>
-                      Open software twin →
-                    </button>
+                    {project.source_kind === "sample" ? (
+                      <button onClick={() => (location.href = "/")}>Open prepared software twin →</button>
+                    ) : mappedNodes(project).length ? (
+                      <details className="project-map-preview">
+                        <summary>View mapped system · {mappedNodes(project).length} components</summary>
+                        <small>{project.scan_summary}</small>
+                        <ul>
+                          {mappedNodes(project).map((node) => (
+                            <li key={node.id}>
+                              <span><b>{node.name}</b><small>{node.kind} · {node.confidence}</small></span>
+                              <em>{node.evidence?.[0] || "Repository tree"}</em>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : (
+                      <button onClick={() => setTab("integrations")}>Import through GitHub to map →</button>
+                    )}
                     {Boolean(project.repository_verified) && (
                       <button className="runner-workflow" onClick={() => (location.href = `/api/runner/workflow?project=${encodeURIComponent(project.id)}`)}>
                         Download CI runner workflow ↓
@@ -1451,7 +1484,12 @@ export default function Dashboard() {
                                 </small>
                               </span>
                               {repository.selected ? (
-                                <em>Imported</em>
+                                <button
+                                  disabled={creating}
+                                  onClick={() => importRepository(repository.repository_id)}
+                                >
+                                  {data.projects.some((project) => project.repository.toLowerCase() === repository.full_name.toLowerCase() && project.scanned_at) ? "Refresh map" : "Map repository"}
+                                </button>
                               ) : (
                                 <button
                                   disabled={creating}

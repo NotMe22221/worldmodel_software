@@ -92,8 +92,11 @@ export async function authenticateApiRequest(request: Request, requiredScope: Ap
 
 export async function listApiProjects(workspaceId: string) {
   const db = await getD1();
-  const rows = await db.prepare("SELECT id, name, repository, branch, status, resilience_score, service_count, updated_at FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100").bind(workspaceId).all();
-  return rows.results;
+  const rows = await db.prepare("SELECT id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count, graph_json, scan_summary, scanned_at, updated_at FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100").bind(workspaceId).all<Record<string, unknown>>();
+  return rows.results.map((row) => {
+    try { return { ...row, graph: JSON.parse(String(row.graph_json || "{}")), graph_json: undefined }; }
+    catch { return { ...row, graph: { version: 1, nodes: [], edges: [] }, graph_json: undefined }; }
+  });
 }
 
 export async function listApiRuns(workspaceId: string) {
