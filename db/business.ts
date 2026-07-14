@@ -1,6 +1,7 @@
 import { createProject, ensureSaasSchema, getSaasSnapshot, requireRole } from "./saas";
 import type { GithubInstallation, GithubRepository } from "../server/github";
 import { recordAudit } from "./audit";
+import { planCatalog } from "../worldmodel/entitlements.mjs";
 
 async function getD1() {
   const { env } = await import("cloudflare:workers");
@@ -82,21 +83,28 @@ export async function processStripeEvent(event: StripeEvent) {
   const db = await getD1();
   const processed = await db.prepare("SELECT event_id FROM billing_events WHERE event_id = ?").bind(event.id).first();
   if (processed) return { duplicate: true };
+  const supportedEvents = new Set(["checkout.session.completed", "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted", "customer.subscription.paused", "customer.subscription.resumed", "customer.subscription.trial_will_end"]);
+  if (!supportedEvents.has(event.type)) {
+    await db.prepare("INSERT OR IGNORE INTO billing_events (event_id, event_type) VALUES (?, ?)").bind(event.id, event.type).run();
+    return { ignored: true };
+  }
   const object = event.data.object;
   const metadata = object.metadata && typeof object.metadata === "object" ? object.metadata as Record<string, unknown> : {};
   const workspaceId = stringField(metadata, "workspace_id") || stringField(object, "client_reference_id");
   if (!workspaceId) { await db.prepare("INSERT OR IGNORE INTO billing_events (event_id, event_type) VALUES (?, ?)").bind(event.id, event.type).run(); return { ignored: true }; }
   const workspace = await db.prepare("SELECT id FROM workspaces WHERE id = ?").bind(workspaceId).first();
   if (!workspace) { await db.prepare("INSERT OR IGNORE INTO billing_events (event_id, event_type) VALUES (?, ?)").bind(event.id, event.type).run(); return { ignored: true }; }
-  const plan = stringField(metadata, "plan") || "pro";
+  const requestedPlan = stringField(metadata, "plan") || "pro";
+  const plan = requestedPlan === "starter" || requestedPlan === "business" ? requestedPlan : "pro";
   const customer = typeof object.customer === "string" ? object.customer : null;
   const subscriptionId = event.type === "checkout.session.completed" ? (typeof object.subscription === "string" ? object.subscription : null) : stringField(object, "id");
   const status = event.type === "customer.subscription.deleted" ? "canceled" : stringField(object, "status") || (event.type === "checkout.session.completed" ? "pending" : "active");
   const periodEnd = typeof object.current_period_end === "number" ? new Date(object.current_period_end * 1000).toISOString() : null;
   await db.prepare("INSERT INTO subscriptions (workspace_id, stripe_customer_id, stripe_subscription_id, status, plan, current_period_end) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET stripe_customer_id = COALESCE(excluded.stripe_customer_id, subscriptions.stripe_customer_id), stripe_subscription_id = COALESCE(excluded.stripe_subscription_id, subscriptions.stripe_subscription_id), status = excluded.status, plan = excluded.plan, current_period_end = excluded.current_period_end, updated_at = CURRENT_TIMESTAMP").bind(workspaceId, customer, subscriptionId, status, plan, periodEnd).run();
-  const active = status === "active" || status === "trialing";
-  const limit = active ? plan === "starter" ? 150 : plan === "business" ? 2000 : 500 : 50;
-  await db.prepare("UPDATE workspaces SET plan = ?, monthly_limit = ? WHERE id = ?").bind(active ? plan : "free", limit, workspaceId).run();
+  const provisioned = status === "active" || status === "trialing" || status === "past_due";
+  const terminal = ["canceled", "unpaid", "paused", "incomplete_expired"].includes(status);
+  if (provisioned) await db.prepare("UPDATE workspaces SET plan = ?, monthly_limit = ? WHERE id = ?").bind(plan, planCatalog[plan].simulationMinutes, workspaceId).run();
+  if (terminal) await db.prepare("UPDATE workspaces SET plan = 'free', monthly_limit = ? WHERE id = ?").bind(planCatalog.free.simulationMinutes, workspaceId).run();
   await db.prepare("INSERT OR IGNORE INTO billing_events (event_id, event_type) VALUES (?, ?)").bind(event.id, event.type).run();
   await recordAudit({ workspaceId, actorEmail: "stripe@system.worldmodel", action: "subscription.updated", targetType: "subscription", targetId: subscriptionId, summary: `Subscription status changed to ${status}`, metadata: { plan, eventType: event.type } });
   return { duplicate: false, workspaceId, status };

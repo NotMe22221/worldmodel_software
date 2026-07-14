@@ -3,7 +3,7 @@ import { requestIdentity } from "@/server/request-identity";
 
 function failure(error: unknown) {
   const message = error instanceof Error ? error.message : "API key could not be updated";
-  const status = message.includes("role") ? 403 : message.includes("limit") ? 409 : message.includes("not found") ? 404 : message.includes("scope") ? 400 : 500;
+  const status = message.includes("role") ? 403 : message.includes("plan") || message.includes("Payment") ? 402 : message.includes("limit") ? 409 : message.includes("not found") ? 404 : message.includes("scope") ? 400 : 500;
   return Response.json({ error: message }, { status });
 }
 

@@ -2,7 +2,7 @@ import { ApiAccessError, authenticateApiRequest, listApiRuns } from "@/db/develo
 import { createSimulationRunForWorkspace, verifySimulationRunForWorkspace } from "@/db/saas";
 
 function apiFailure(error: unknown, headers: Record<string, string> = {}) {
-  if (error instanceof ApiAccessError) return Response.json({ error: { code: error.status === 429 ? "rate_limit_exceeded" : error.status === 403 ? "insufficient_scope" : "unauthorized", message: error.message } }, { status: error.status, headers: error.headers });
+  if (error instanceof ApiAccessError) return Response.json({ error: { code: error.status === 429 ? "rate_limit_exceeded" : error.status === 403 ? "insufficient_scope" : error.status === 402 ? "subscription_required" : "unauthorized", message: error.message } }, { status: error.status, headers: error.headers });
   const message = error instanceof Error ? error.message : "Request failed";
   const status = message.includes("not found") ? 404 : message.includes("limit") ? 429 : 500;
   return Response.json({ error: { code: status === 404 ? "not_found" : status === 429 ? "usage_limit_exceeded" : "internal_error", message } }, { status, headers });

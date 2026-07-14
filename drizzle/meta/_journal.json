@@ -43,6 +43,13 @@
       "when": 1783995047808,
       "tag": "0005_useful_paper_doll",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1783995769898,
+      "tag": "0006_supreme_sinister_six",
+      "breakpoints": true
     }
   ]
 }

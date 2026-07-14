@@ -35,6 +35,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Append-only tenant audit events with administrator-only spreadsheet-safe CSV export
 - Role-aware JSON portability, reversible workspace deletion reviews, and an evidence-backed commercial launch gate
 - Hashed, revocable developer API keys with least-privilege scopes, durable rate limiting, and CI-oriented project/run endpoints
+- Durable 14-day trials, calendar-month usage rollover, Stripe-aware access states, and server-enforced project, seat, simulation, and API-key entitlements
 - Durable support cases visible to the requester and workspace administrators
 - Public trust, security, privacy, pilot terms, and support disclosures that distinguish implemented controls from planned certifications
 - Responsive product and sub-three-minute demonstration path

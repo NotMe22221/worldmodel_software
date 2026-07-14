@@ -8,6 +8,8 @@ export const workspaces = sqliteTable("workspaces", {
   plan: text("plan").notNull().default("trial"),
   simulationMinutes: integer("simulation_minutes").notNull().default(0),
   monthlyLimit: integer("monthly_limit").notNull().default(500),
+  trialEndsAt: text("trial_ends_at"),
+  usagePeriodStart: text("usage_period_start"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

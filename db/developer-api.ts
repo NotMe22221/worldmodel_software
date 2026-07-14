@@ -1,5 +1,5 @@
 import { recordAudit } from "./audit";
-import { ensureSaasSchema, getSaasSnapshot, requireRole } from "./saas";
+import { ensureSaasSchema, getSaasSnapshot, getWorkspaceEntitlements, requireRole, requireWriteEntitlement } from "./saas";
 import { digestApiToken, generateApiTokenMaterial } from "../worldmodel/api-key-security.mjs";
 
 export const apiScopes = ["projects:read", "runs:read", "runs:write"] as const;
@@ -24,7 +24,8 @@ export async function createApiKey(email: string, input: { name: string; scopes:
   const db = await getD1();
   const workspaceId = String(snapshot.workspace.id);
   const active = await db.prepare("SELECT COUNT(*) AS count FROM api_keys WHERE workspace_id = ? AND status = 'active'").bind(workspaceId).first<{ count: number }>();
-  if (Number(active?.count || 0) >= 10) throw new Error("Active API key limit reached");
+  requireWriteEntitlement(snapshot.entitlements);
+  if (Number(active?.count || 0) >= snapshot.entitlements.limits.apiKeys) throw new Error(`${snapshot.entitlements.planName} plan API key limit reached`);
   const id = `key_${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
   const { token, keyPrefix } = generateApiTokenMaterial(id);
   const keyHash = await digestApiToken(token);
@@ -70,6 +71,12 @@ export async function authenticateApiRequest(request: Request, requiredScope: Ap
   try { scopes = JSON.parse(key.scopes_json); }
   catch { throw new ApiAccessError("API key scopes are invalid", 401); }
   if (!scopes.includes(requiredScope)) throw new ApiAccessError(`API key requires the ${requiredScope} scope`, 403);
+  const entitlements = await getWorkspaceEntitlements(key.workspace_id);
+  if (entitlements.limits.apiKeys === 0) throw new ApiAccessError("Developer API access requires a paid plan or active trial", 402);
+  if (requiredScope === "runs:write") {
+    try { requireWriteEntitlement(entitlements); }
+    catch (error) { throw new ApiAccessError(error instanceof Error ? error.message : "Write access is paused", 402); }
+  }
   const bucketStart = `${new Date().toISOString().slice(0, 16)}:00Z`;
   const bucketId = `${key.id}:${bucketStart}`;
   await db.prepare("INSERT INTO api_rate_buckets (id, api_key_id, bucket_start, request_count) VALUES (?, ?, ?, 1) ON CONFLICT(api_key_id, bucket_start) DO UPDATE SET request_count = request_count + 1").bind(bucketId, key.id, bucketStart).run();

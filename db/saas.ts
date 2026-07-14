@@ -1,4 +1,5 @@
 import { recordAudit } from "./audit";
+import { resolveEntitlements, usagePeriod } from "../worldmodel/entitlements.mjs";
 
 async function getD1() {
   const { env } = await import("cloudflare:workers");
@@ -34,10 +35,18 @@ async function ensureRunEvidenceColumns(db: Awaited<ReturnType<typeof getD1>>) {
   }
 }
 
+async function ensureWorkspaceLifecycleColumns(db: Awaited<ReturnType<typeof getD1>>) {
+  const columns = await db.prepare("PRAGMA table_info(workspaces)").all<{ name: string }>();
+  const existing = new Set(columns.results.map((column) => column.name));
+  if (!existing.has("trial_ends_at")) await db.prepare("ALTER TABLE workspaces ADD COLUMN trial_ends_at TEXT").run();
+  if (!existing.has("usage_period_start")) await db.prepare("ALTER TABLE workspaces ADD COLUMN usage_period_start TEXT").run();
+  await db.prepare("UPDATE workspaces SET trial_ends_at = COALESCE(trial_ends_at, datetime(created_at, '+14 days')), usage_period_start = COALESCE(usage_period_start, strftime('%Y-%m-01T00:00:00.000Z', 'now'))").run();
+}
+
 export async function ensureSaasSchema() {
   const db = await getD1();
   await db.batch([
-    db.prepare("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_email TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'trial', simulation_minutes INTEGER NOT NULL DEFAULT 0, monthly_limit INTEGER NOT NULL DEFAULT 500, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_email TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'trial', simulation_minutes INTEGER NOT NULL DEFAULT 0, monthly_limit INTEGER NOT NULL DEFAULT 500, trial_ends_at TEXT, usage_period_start TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, repository TEXT NOT NULL, branch TEXT NOT NULL DEFAULT 'main', status TEXT NOT NULL DEFAULT 'ready', resilience_score INTEGER NOT NULL DEFAULT 0, service_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS simulation_runs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), scenario TEXT NOT NULL, status TEXT NOT NULL, before_score INTEGER NOT NULL, after_score INTEGER, error_rate TEXT NOT NULL, latency_ms INTEGER NOT NULL, journey_success INTEGER NOT NULL, duration_seconds INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS workspace_members (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL REFERENCES workspaces(id), email TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
@@ -65,6 +74,7 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS api_rate_buckets (id TEXT PRIMARY KEY, api_key_id TEXT NOT NULL REFERENCES api_keys(id), bucket_start TEXT NOT NULL, request_count INTEGER NOT NULL DEFAULT 0)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS api_rate_buckets_key_start_idx ON api_rate_buckets(api_key_id, bucket_start)"),
   ]);
+  await ensureWorkspaceLifecycleColumns(db);
   await ensureRunEvidenceColumns(db);
 }
 
@@ -76,7 +86,7 @@ export async function seedWorkspace(email: string) {
   const workspaceId = `ws_${suffix}`;
   const projectId = `proj_checkout_${suffix}`;
   await db.batch([
-    db.prepare("INSERT OR IGNORE INTO workspaces (id, name, owner_email, plan, simulation_minutes, monthly_limit) VALUES (?, ?, ?, ?, ?, ?)").bind(workspaceId, "Northstar Engineering", email, "pro_trial", 214, 500),
+    db.prepare("INSERT OR IGNORE INTO workspaces (id, name, owner_email, plan, simulation_minutes, monthly_limit, trial_ends_at, usage_period_start) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(workspaceId, "Northstar Engineering", email, "pro_trial", 214, 500, new Date(Date.now() + 14 * 86_400_000).toISOString(), usagePeriod().start),
     db.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, email, role) VALUES (?, ?, ?)").bind(workspaceId, email, "owner"),
     db.prepare("INSERT OR IGNORE INTO projects (id, workspace_id, name, repository, branch, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(projectId, workspaceId, "Checkout resilience", "shopstream/demo-store", "main", "ready", 94, 7),
     db.prepare("INSERT OR IGNORE INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(`run_payment_${suffix}`, projectId, "Payment outage", "verified", 31, 94, "0.4%", 488, 100, 120, "2026-07-13T23:42:00Z"),
@@ -94,12 +104,24 @@ export async function getSaasSnapshot(email: string) {
   const db = await getD1();
   const workspace = await db.prepare("SELECT w.*, m.role AS membership_role FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE lower(m.email) = lower(?) ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'member' THEN 2 ELSE 3 END, w.created_at LIMIT 1").bind(email).first<{ id: string; membership_role: string } & Record<string, unknown>>();
   if (!workspace) throw new Error("Workspace not found");
+  const period = usagePeriod();
+  if (String(workspace.usage_period_start || "") !== period.start) {
+    await db.prepare("UPDATE workspaces SET simulation_minutes = 0, usage_period_start = ? WHERE id = ?").bind(period.start, workspace.id).run();
+    workspace.simulation_minutes = 0;
+    workspace.usage_period_start = period.start;
+  }
   const projects = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC").bind(workspace.id).all();
   const runs = await db.prepare("SELECT r.*, p.name AS project_name FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 20").bind(workspace.id).all();
   const members = await db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? ORDER BY created_at").bind(workspace.id).all();
   const githubInstallations = await db.prepare("SELECT installation_id, account_login, account_type, repository_selection, status, created_at AS connected_at FROM github_installations WHERE workspace_id = ? ORDER BY created_at DESC").bind(workspace.id).all();
   const githubRepositories = await db.prepare("SELECT repository_id, installation_id, full_name, default_branch, is_private, selected, synced_at FROM github_repositories WHERE workspace_id = ? ORDER BY selected DESC, full_name LIMIT 100").bind(workspace.id).all();
   const subscription = await db.prepare("SELECT status, plan, current_period_end, updated_at FROM subscriptions WHERE workspace_id = ?").bind(workspace.id).first();
+  const entitlements = resolveEntitlements({ workspace, subscription });
+  if (Number(workspace.monthly_limit) !== entitlements.limits.simulationMinutes || String(workspace.plan) !== entitlements.planKey) {
+    await db.prepare("UPDATE workspaces SET plan = ?, monthly_limit = ? WHERE id = ?").bind(entitlements.planKey, entitlements.limits.simulationMinutes, workspace.id).run();
+    workspace.plan = entitlements.planKey;
+    workspace.monthly_limit = entitlements.limits.simulationMinutes;
+  }
   const auditAccess = workspace.membership_role === "owner" || workspace.membership_role === "admin";
   const auditLogs = auditAccess ? await db.prepare("SELECT id, actor_email, action, target_type, target_id, summary, created_at FROM audit_logs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : { results: [] };
   const supportCases = auditAccess ? await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? AND lower(created_by) = lower(?) ORDER BY created_at DESC LIMIT 50").bind(workspace.id, email).all();
@@ -107,7 +129,7 @@ export async function getSaasSnapshot(email: string) {
   const deletionRequests = workspace.membership_role === "owner" ? await db.prepare("SELECT id, scope, status, reason, execute_after, created_at, canceled_at, completed_at FROM data_deletion_requests WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 10").bind(workspace.id).all() : { results: [] };
   const apiKeys = auditAccess ? await db.prepare("SELECT id, name, key_prefix, scopes_json, status, created_by, last_used_at, expires_at, created_at, revoked_at FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 20").bind(workspace.id).all() : { results: [] };
   const apiUsage = auditAccess ? await db.prepare("SELECT COALESCE(SUM(b.request_count), 0) AS requests_today FROM api_rate_buckets b JOIN api_keys k ON k.id = b.api_key_id WHERE k.workspace_id = ? AND b.bucket_start >= date('now')").bind(workspace.id).first() : { requests_today: 0 };
-  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results, apiKeys: apiKeys.results, apiUsage };
+  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, entitlements, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results, apiKeys: apiKeys.results, apiUsage };
 }
 
 export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>, allowed: string[]) {
@@ -115,9 +137,33 @@ export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>
   if (!allowed.includes(role)) throw new Error("Your workspace role does not allow this action");
 }
 
+export function requireWriteEntitlement(entitlements: { canWrite: boolean; message: string }) {
+  if (!entitlements.canWrite) throw new Error(entitlements.message);
+}
+
+export async function getWorkspaceEntitlements(workspaceId: string) {
+  const db = await getD1();
+  const workspace = await db.prepare("SELECT * FROM workspaces WHERE id = ?").bind(workspaceId).first<Record<string, unknown>>();
+  if (!workspace) throw new Error("Workspace not found");
+  const period = usagePeriod();
+  if (String(workspace.usage_period_start || "") !== period.start) {
+    await db.prepare("UPDATE workspaces SET simulation_minutes = 0, usage_period_start = ? WHERE id = ?").bind(period.start, workspaceId).run();
+    workspace.simulation_minutes = 0;
+    workspace.usage_period_start = period.start;
+  }
+  const subscription = await db.prepare("SELECT status, plan, current_period_end, updated_at FROM subscriptions WHERE workspace_id = ?").bind(workspaceId).first();
+  const entitlements = resolveEntitlements({ workspace, subscription });
+  if (Number(workspace.monthly_limit) !== entitlements.limits.simulationMinutes || String(workspace.plan) !== entitlements.planKey) {
+    await db.prepare("UPDATE workspaces SET plan = ?, monthly_limit = ? WHERE id = ?").bind(entitlements.planKey, entitlements.limits.simulationMinutes, workspaceId).run();
+  }
+  return entitlements;
+}
+
 export async function createProject(email: string, input: { name: string; repository: string; branch: string }) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin", "member"]);
+  requireWriteEntitlement(snapshot.entitlements);
+  if (snapshot.projects.length >= snapshot.entitlements.limits.projects) throw new Error(`${snapshot.entitlements.planName} plan project limit reached`);
   const id = `proj_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const db = await getD1();
   await db.prepare("INSERT INTO projects (id, workspace_id, name, repository, branch, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(id, snapshot.workspace.id, input.name, input.repository, input.branch, "scanning", 0, 0).run();
@@ -137,7 +183,10 @@ export async function updateWorkspace(email: string, name: string) {
 export async function inviteWorkspaceMember(email: string, memberEmail: string, role: "admin" | "member" | "viewer") {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin"]);
+  requireWriteEntitlement(snapshot.entitlements);
   const db = await getD1();
+  const existing = snapshot.members.find((member) => String(member.email).toLowerCase() === memberEmail.toLowerCase());
+  if (!existing && snapshot.members.length >= snapshot.entitlements.limits.seats) throw new Error(`${snapshot.entitlements.planName} plan seat limit reached`);
   await db.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, email, role) VALUES (?, ?, ?)").bind(snapshot.workspace.id, memberEmail, role).run();
   await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "member.invited", targetType: "member", targetId: memberEmail, summary: `Added ${memberEmail} as ${role}`, metadata: { role } });
   return db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? AND email = ?").bind(snapshot.workspace.id, memberEmail).first();
@@ -146,14 +195,17 @@ export async function inviteWorkspaceMember(email: string, memberEmail: string, 
 export async function createSimulationRun(email: string, scenarioKey: ScenarioKey, requestedProjectId?: string) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin", "member"]);
+  requireWriteEntitlement(snapshot.entitlements);
   return createSimulationRunForWorkspace(String(snapshot.workspace.id), email, scenarioKey, requestedProjectId);
 }
 
 export async function createSimulationRunForWorkspace(workspaceId: string, actor: string, scenarioKey: ScenarioKey, requestedProjectId?: string) {
   const db = await getD1();
+  const entitlements = await getWorkspaceEntitlements(workspaceId);
+  requireWriteEntitlement(entitlements);
   const workspace = await db.prepare("SELECT id, simulation_minutes, monthly_limit FROM workspaces WHERE id = ?").bind(workspaceId).first<{ id: string; simulation_minutes: number; monthly_limit: number }>();
   if (!workspace) throw new Error("Workspace not found");
-  if (workspace.simulation_minutes + 2 > workspace.monthly_limit) throw new Error("Monthly simulation minute limit reached");
+  if (workspace.simulation_minutes + 2 > entitlements.limits.simulationMinutes) throw new Error("Monthly simulation minute limit reached");
   const project = requestedProjectId
     ? await db.prepare("SELECT id FROM projects WHERE id = ? AND workspace_id = ?").bind(requestedProjectId, workspaceId).first<{ id: string }>()
     : await db.prepare("SELECT id FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 1").bind(workspaceId).first<{ id: string }>();
@@ -172,10 +224,12 @@ export async function createSimulationRunForWorkspace(workspaceId: string, actor
 export async function verifySimulationRun(email: string, runId: string) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin", "member"]);
+  requireWriteEntitlement(snapshot.entitlements);
   return verifySimulationRunForWorkspace(String(snapshot.workspace.id), email, runId);
 }
 
 export async function verifySimulationRunForWorkspace(workspaceId: string, actor: string, runId: string) {
+  requireWriteEntitlement(await getWorkspaceEntitlements(workspaceId));
   const db = await getD1();
   const run = await db.prepare("SELECT r.* FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspaceId).first<{ scenario_key: ScenarioKey | null } & Record<string, unknown>>();
   if (!run) throw new Error("Simulation run not found in this workspace");

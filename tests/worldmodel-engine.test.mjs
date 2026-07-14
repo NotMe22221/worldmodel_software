@@ -9,6 +9,7 @@ import { authorizedInstallation } from "../server/github.ts";
 import { safeCsvCell } from "../worldmodel/safe-csv.mjs";
 import { launchReadiness } from "../server/readiness.ts";
 import { digestApiToken, generateApiTokenMaterial } from "../worldmodel/api-key-security.mjs";
+import { resolveEntitlements, usagePeriod } from "../worldmodel/entitlements.mjs";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(await readFile(new URL("../sample-app/worldmodel.manifest.json", import.meta.url)));
@@ -106,4 +107,31 @@ test("developer API credentials use one-time high-entropy material and irreversi
   const digest = await digestApiToken(first.token);
   assert.match(digest, /^[a-f0-9]{64}$/);
   assert.ok(!digest.includes(first.token));
+});
+
+test("commercial entitlements follow trial, paid, delinquent, and canceled lifecycle states", () => {
+  const now = new Date("2026-07-13T12:00:00Z");
+  const workspace = { trial_ends_at: "2026-07-20T12:00:00Z" };
+  const trial = resolveEntitlements({ workspace, subscription: null, now });
+  assert.equal(trial.planKey, "pro_trial");
+  assert.equal(trial.trialDaysRemaining, 7);
+  assert.deepEqual(trial.limits, { simulationMinutes: 500, projects: 10, seats: 5, apiKeys: 2 });
+
+  const starter = resolveEntitlements({ workspace, subscription: { status: "active", plan: "starter" }, now });
+  assert.equal(starter.planKey, "starter");
+  assert.equal(starter.canWrite, true);
+  assert.deepEqual(starter.limits, { simulationMinutes: 150, projects: 3, seats: 1, apiKeys: 2 });
+
+  const delinquent = resolveEntitlements({ workspace, subscription: { status: "past_due", plan: "pro" }, now });
+  assert.equal(delinquent.planKey, "pro");
+  assert.equal(delinquent.access, "read_only");
+  assert.equal(delinquent.canWrite, false);
+
+  const canceled = resolveEntitlements({ workspace, subscription: { status: "canceled", plan: "pro" }, now });
+  assert.equal(canceled.planKey, "free");
+  assert.equal(canceled.limits.apiKeys, 0);
+});
+
+test("usage periods roll over on calendar-month boundaries", () => {
+  assert.deepEqual(usagePeriod(new Date("2026-12-31T23:59:59Z")), { start: "2026-12-01T00:00:00.000Z", end: "2027-01-01T00:00:00.000Z" });
 });
