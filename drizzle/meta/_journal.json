@@ -64,6 +64,13 @@
       "when": 1783997239967,
       "tag": "0008_bright_war_machine",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1783997633393,
+      "tag": "0009_fearless_karen_page",
+      "breakpoints": true
     }
   ]
 }

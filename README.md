@@ -53,6 +53,6 @@ Open `http://localhost:3000`. Validate with `npm test` and `npm run lint`.
 
 ## Production integrations
 
-Copy the keys from `.env.example` into the Sites production environment rather than committing secrets. Configure the GitHub App setup URL as `/api/integrations/github/setup` and its OAuth callback as `/api/integrations/github/callback`. The connection flow validates a one-time workspace state and confirms the installation appears in the authorizing user’s accessible installations before saving repository metadata.
+Copy the keys from `.env.example` into the Sites production environment rather than committing secrets. Configure the GitHub App setup URL as `/api/integrations/github/setup` and its OAuth callback as `/api/integrations/github/callback`. Grant repository **Contents: write** and **Pull requests: write** only if draft-PR publication is enabled. The connection flow validates a one-time workspace state and confirms the installation appears in the authorizing user’s accessible installations before saving repository metadata. Approved handoffs use a short-lived installation token to create an idempotent branch, commit the review packet under `.worldmodel/repairs/`, and open a draft pull request.
 
 Configure Stripe Checkout prices for Starter and Pro, then register `/api/billing/webhook` for `checkout.session.completed` and `customer.subscription.*` lifecycle events. Subscription limits change only after a fresh, matching raw-body webhook signature is processed.

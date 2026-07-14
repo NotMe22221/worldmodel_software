@@ -1,6 +1,12 @@
 import { recordAudit } from "./audit";
 import { getSaasSnapshot, requireRole, requireWriteEntitlement } from "./saas";
 import { repairTransition } from "../worldmodel/repair-workflow.mjs";
+import {
+  githubDraftBody,
+  githubEvidencePath,
+  githubRepositoryParts,
+} from "../worldmodel/github-pr-contract.mjs";
+import { publishGithubDraftEvidence } from "../server/github";
 
 type RepairStatus =
   | "ready_for_review"
@@ -157,15 +163,28 @@ export async function prepareRepairPullRequest(
   const db = await getD1();
   const repository = await db
     .prepare(
-      "SELECT gr.repository_id FROM github_repositories gr JOIN github_installations gi ON gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1",
+      "SELECT gr.repository_id, gr.installation_id, gi.permissions_json FROM github_repositories gr JOIN github_installations gi ON gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1",
     )
     .bind(snapshot.workspace.id, repair.repository)
-    .first();
+    .first<{
+      repository_id: string;
+      installation_id: string;
+      permissions_json: string;
+    }>();
   const branchName = `worldmodel/${String(repair.run_id)
     .replace(/^run_/, "repair-")
     .replace(/[^a-zA-Z0-9_-]/g, "-")
     .slice(0, 70)}`;
-  const prStatus = repository ? "ready_to_publish" : "connection_required";
+  let prStatus = "connection_required";
+  if (repository) {
+    const permissions = JSON.parse(
+      repository.permissions_json || "{}",
+    ) as Record<string, string>;
+    prStatus =
+      permissions.contents === "write" && permissions.pull_requests === "write"
+        ? "ready_to_publish"
+        : "permission_required";
+  }
   await db
     .prepare(
       "UPDATE repair_proposals SET status = 'pr_ready', pr_status = ?, branch_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?",
@@ -182,6 +201,108 @@ export async function prepareRepairPullRequest(
     metadata: { branchName, prStatus },
   });
   return getRepairPacket(email, proposalId);
+}
+
+export async function publishRepairPullRequest(
+  email: string,
+  proposalId: string,
+) {
+  const snapshot = await getSaasSnapshot(email);
+  requireRole(snapshot, ["owner", "admin"]);
+  requireWriteEntitlement(snapshot.entitlements);
+  const repair = findRepair(snapshot, proposalId);
+  if (String(repair.status) !== "pr_ready")
+    throw new Error("The draft pull request handoff has not been prepared");
+  if (String(repair.pr_status) === "published" && repair.pr_url)
+    return getRepairPacket(email, proposalId);
+  if (
+    !["ready_to_publish", "publication_failed"].includes(
+      String(repair.pr_status),
+    )
+  )
+    throw new Error(
+      "The connected GitHub repository is not ready for draft pull request publication",
+    );
+  const db = await getD1();
+  const repository = await db
+    .prepare(
+      "SELECT gr.installation_id, gi.permissions_json FROM github_repositories gr JOIN github_installations gi ON gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1",
+    )
+    .bind(snapshot.workspace.id, repair.repository)
+    .first<{ installation_id: string; permissions_json: string }>();
+  if (!repository)
+    throw new Error(
+      "The connected GitHub repository is not ready for draft pull request publication",
+    );
+  const permissions = JSON.parse(repository.permissions_json || "{}") as Record<
+    string,
+    string
+  >;
+  if (permissions.contents !== "write" || permissions.pull_requests !== "write")
+    throw new Error(
+      "The GitHub App requires Contents and Pull requests write permissions",
+    );
+  const claimed = await db
+    .prepare(
+      "UPDATE repair_proposals SET pr_status = 'publishing', pr_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ? AND pr_status IN ('ready_to_publish', 'publication_failed')",
+    )
+    .bind(proposalId, snapshot.workspace.id)
+    .run();
+  if (!claimed.meta.changes)
+    throw new Error("Draft pull request publication is already in progress");
+  try {
+    const packet = await getRepairPacket(email, proposalId);
+    const parts = githubRepositoryParts(String(repair.repository));
+    const published = await publishGithubDraftEvidence({
+      installationId: repository.installation_id,
+      owner: parts.owner,
+      repository: parts.repository,
+      baseBranch: String(repair.project_branch),
+      headBranch: String(repair.branch_name),
+      evidencePath: githubEvidencePath(proposalId),
+      title: `draft: ${repair.title}`,
+      body: githubDraftBody(packet),
+      evidence: JSON.stringify(packet, null, 2),
+    });
+    await db
+      .prepare(
+        "UPDATE repair_proposals SET pr_status = 'published', pr_url = ?, pr_number = ?, pr_error = NULL, published_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?",
+      )
+      .bind(
+        published.html_url,
+        published.number,
+        proposalId,
+        snapshot.workspace.id,
+      )
+      .run();
+    await recordAudit({
+      workspaceId: String(snapshot.workspace.id),
+      actorEmail: email,
+      action: "repair.pr_published",
+      targetType: "repair_proposal",
+      targetId: proposalId,
+      summary: `Published draft pull request #${published.number} for ${repair.title}`,
+      metadata: {
+        repository: repair.repository,
+        branch: repair.branch_name,
+        pullRequestNumber: published.number,
+        url: published.html_url,
+      },
+    });
+    return getRepairPacket(email, proposalId);
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message.slice(0, 300)
+        : "GitHub publication failed";
+    await db
+      .prepare(
+        "UPDATE repair_proposals SET pr_status = 'publication_failed', pr_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?",
+      )
+      .bind(message, proposalId, snapshot.workspace.id)
+      .run();
+    throw error;
+  }
 }
 
 export async function getRepairPacket(email: string, proposalId: string) {
@@ -223,6 +344,8 @@ export async function getRepairPacket(email: string, proposalId: string) {
       branch: repair.branch_name,
       url: repair.pr_url,
       number: repair.pr_number,
+      error: repair.pr_error,
+      publishedAt: repair.published_at,
     },
     generatedAt: new Date().toISOString(),
   };

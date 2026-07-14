@@ -69,6 +69,8 @@ type Repair = {
   branch_name: string | null;
   pr_url: string | null;
   pr_number: number | null;
+  pr_error: string | null;
+  published_at: string | null;
   updated_at: string;
   scenario: string;
   scenario_fingerprint: string;
@@ -454,6 +456,7 @@ export default function Dashboard() {
         approve: "Repair approved with review evidence.",
         "request-changes": "Changes requested; the repair must be resubmitted.",
         "prepare-pr": "Draft pull request handoff prepared.",
+        "publish-pr": "GitHub draft pull request published.",
       };
       setNotice(messages[action] || "Repair workflow updated.");
     } catch (reason) {
@@ -1108,16 +1111,38 @@ export default function Dashboard() {
                       {repair.status === "pr_ready" && (
                         <div className="pr-handoff">
                           <b>
-                            {repair.pr_status === "ready_to_publish"
-                              ? "GitHub handoff ready"
-                              : "GitHub connection required"}
+                            {repair.pr_status === "published"
+                              ? `Draft pull request #${repair.pr_number} published`
+                              : repair.pr_status === "ready_to_publish"
+                                ? "GitHub publication ready"
+                                : repair.pr_status === "permission_required"
+                                  ? "GitHub permissions required"
+                                  : repair.pr_status === "publication_failed"
+                                    ? "GitHub publication failed"
+                                    : "GitHub connection required"}
                           </b>
                           <code>{repair.branch_name}</code>
                           <p>
-                            {repair.pr_status === "ready_to_publish"
-                              ? "The connected repository is authorized; the approved evidence packet is ready for publication."
-                              : "Connect and import this repository before publishing. No pull request has been falsely claimed."}
+                            {repair.pr_status === "published"
+                              ? "GitHub confirmed the draft pull request and WorldModel recorded its URL and audit evidence."
+                              : repair.pr_status === "ready_to_publish"
+                                ? "The installation grants Contents and Pull requests write access. Publication will create a branch, commit the approved evidence packet, and open a draft."
+                                : repair.pr_status === "permission_required"
+                                  ? "Update the GitHub App installation to grant Contents and Pull requests write access."
+                                  : repair.pr_status === "publication_failed"
+                                    ? repair.pr_error ||
+                                      "GitHub rejected the publication attempt. Retry after resolving repository access."
+                                    : "Connect and import this repository before publishing. No pull request has been falsely claimed."}
                           </p>
+                          {repair.pr_url && (
+                            <a
+                              href={repair.pr_url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open draft pull request ↗
+                            </a>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1188,6 +1213,25 @@ export default function Dashboard() {
                             }
                           >
                             Prepare draft PR →
+                          </button>
+                        )}
+                      {repair.status === "pr_ready" &&
+                        (repair.pr_status === "ready_to_publish" ||
+                          repair.pr_status === "publication_failed") &&
+                        (data.workspace.membership_role === "owner" ||
+                          data.workspace.membership_role === "admin") && (
+                          <button
+                            className="primary"
+                            disabled={creating}
+                            onClick={() =>
+                              repairAction("publish-pr", repair.id)
+                            }
+                          >
+                            {creating
+                              ? "Publishing…"
+                              : repair.pr_status === "publication_failed"
+                                ? "Retry publication →"
+                                : "Publish draft PR →"}
                           </button>
                         )}
                     </footer>
@@ -1288,6 +1332,7 @@ export default function Dashboard() {
                       <ul>
                         <li>✓ OAuth user ownership validation</li>
                         <li>✓ Installation-scoped repository tokens</li>
+                        <li>✓ Explicit Contents + Pull requests write gate</li>
                         <li>✓ No long-lived GitHub token stored</li>
                       </ul>
                       <button

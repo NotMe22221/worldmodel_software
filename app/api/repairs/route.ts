@@ -2,6 +2,7 @@ import {
   approveRepair,
   getRepairPacket,
   prepareRepairPullRequest,
+  publishRepairPullRequest,
   requestRepairChanges,
   requestRepairReview,
 } from "@/db/repairs";
@@ -17,13 +18,17 @@ function failure(error: unknown) {
       ? 403
       : message.includes("not found")
         ? 404
-        : message.includes("plan") || message.includes("Payment")
-          ? 402
-          : message.includes("must be approved") ||
-              message.includes("not awaiting") ||
-              message.includes("not ready")
-            ? 409
-            : 400;
+        : message.includes("not configured")
+          ? 503
+          : message.includes("GitHub request failed")
+            ? 502
+            : message.includes("plan") || message.includes("Payment")
+              ? 402
+              : message.includes("must be approved") ||
+                  message.includes("not awaiting") ||
+                  message.includes("not ready")
+                ? 409
+                : 400;
   return Response.json({ error: message }, { status });
 }
 
@@ -102,6 +107,10 @@ export async function POST(request: Request) {
     if (payload.action === "prepare-pr")
       return Response.json({
         repair: await prepareRepairPullRequest(email, payload.proposalId),
+      });
+    if (payload.action === "publish-pr")
+      return Response.json({
+        repair: await publishRepairPullRequest(email, payload.proposalId),
       });
     return Response.json(
       { error: "Choose a supported repair action" },

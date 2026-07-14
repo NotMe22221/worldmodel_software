@@ -43,13 +43,20 @@ async function ensureWorkspaceLifecycleColumns(db: Awaited<ReturnType<typeof get
   await db.prepare("UPDATE workspaces SET trial_ends_at = COALESCE(trial_ends_at, datetime(created_at, '+14 days')), usage_period_start = COALESCE(usage_period_start, strftime('%Y-%m-01T00:00:00.000Z', 'now'))").run();
 }
 
+async function ensureRepairProposalColumns(db: Awaited<ReturnType<typeof getD1>>) {
+  const columns = await db.prepare("PRAGMA table_info(repair_proposals)").all<{ name: string }>();
+  const existing = new Set(columns.results.map((column) => column.name));
+  if (!existing.has("pr_error")) await db.prepare("ALTER TABLE repair_proposals ADD COLUMN pr_error TEXT").run();
+  if (!existing.has("published_at")) await db.prepare("ALTER TABLE repair_proposals ADD COLUMN published_at TEXT").run();
+}
+
 export async function ensureSaasSchema() {
   const db = await getD1();
   await db.batch([
     db.prepare("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_email TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'trial', simulation_minutes INTEGER NOT NULL DEFAULT 0, monthly_limit INTEGER NOT NULL DEFAULT 500, trial_ends_at TEXT, usage_period_start TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, repository TEXT NOT NULL, branch TEXT NOT NULL DEFAULT 'main', status TEXT NOT NULL DEFAULT 'ready', resilience_score INTEGER NOT NULL DEFAULT 0, service_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS simulation_runs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), scenario TEXT NOT NULL, status TEXT NOT NULL, before_score INTEGER NOT NULL, after_score INTEGER, error_rate TEXT NOT NULL, latency_ms INTEGER NOT NULL, journey_success INTEGER NOT NULL, duration_seconds INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS repair_proposals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), run_id TEXT NOT NULL REFERENCES simulation_runs(id), status TEXT NOT NULL DEFAULT 'ready_for_review', title TEXT NOT NULL, summary TEXT NOT NULL, files_json TEXT NOT NULL DEFAULT '[]', tests_json TEXT NOT NULL DEFAULT '[]', risks_json TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, reviewer_email TEXT, decision_note TEXT, requested_at TEXT, approved_by TEXT, approved_at TEXT, pr_status TEXT NOT NULL DEFAULT 'not_requested', branch_name TEXT, pr_url TEXT, pr_number INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS repair_proposals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), run_id TEXT NOT NULL REFERENCES simulation_runs(id), status TEXT NOT NULL DEFAULT 'ready_for_review', title TEXT NOT NULL, summary TEXT NOT NULL, files_json TEXT NOT NULL DEFAULT '[]', tests_json TEXT NOT NULL DEFAULT '[]', risks_json TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, reviewer_email TEXT, decision_note TEXT, requested_at TEXT, approved_by TEXT, approved_at TEXT, pr_status TEXT NOT NULL DEFAULT 'not_requested', branch_name TEXT, pr_url TEXT, pr_number INTEGER, pr_error TEXT, published_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS repair_proposals_run_idx ON repair_proposals(run_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS repair_proposals_workspace_idx ON repair_proposals(workspace_id, updated_at)"),
     db.prepare("CREATE TABLE IF NOT EXISTS workspace_members (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL REFERENCES workspaces(id), email TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
@@ -85,6 +92,7 @@ export async function ensureSaasSchema() {
   ]);
   await ensureWorkspaceLifecycleColumns(db);
   await ensureRunEvidenceColumns(db);
+  await ensureRepairProposalColumns(db);
 }
 
 export async function seedWorkspace(email: string) {

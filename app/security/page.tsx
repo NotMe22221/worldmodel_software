@@ -80,6 +80,11 @@ export default function SecurityPage() {
             GitHub user access tokens are not stored.
           </li>
           <li>
+            Draft publication requires an approved repair plus explicit Contents
+            and Pull requests write permissions; it commits only the tenant-owned
+            evidence packet and is retried idempotently.
+          </li>
+          <li>
             Stripe collects payment details on Stripe-hosted Checkout.
             WorldModel does not receive card numbers.
           </li>

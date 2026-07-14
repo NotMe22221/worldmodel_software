@@ -70,6 +70,8 @@ export const repairProposals = sqliteTable("repair_proposals", {
   branchName: text("branch_name"),
   prUrl: text("pr_url"),
   prNumber: integer("pr_number"),
+  prError: text("pr_error"),
+  publishedAt: text("published_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
