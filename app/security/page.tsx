@@ -18,6 +18,11 @@ export default function SecurityPage() {
             check.
           </li>
           <li>
+            Cross-tenant operations require an explicit server-side operator
+            email allowlist. The operator console provides no customer
+            impersonation or secret access.
+          </li>
+          <li>
             Project, run, report, integration, support, and audit queries are
             scoped to the current workspace.
           </li>

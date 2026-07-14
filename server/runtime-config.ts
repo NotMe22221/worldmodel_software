@@ -79,3 +79,19 @@ export async function stripeSecretConfiguration() {
     throw new Error("Stripe billing credentials are not configured");
   return { secretKey };
 }
+
+export function parseOperatorEmails(value: string | undefined) {
+  return new Set(
+    (value || "")
+      .split(",")
+      .map((email) => email.trim().toLowerCase())
+      .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)),
+  );
+}
+
+export async function hasOperatorAccess(email: string) {
+  const env = await runtimeEnvironment();
+  return parseOperatorEmails(env.WORLDMODEL_OPERATOR_EMAILS).has(
+    email.trim().toLowerCase(),
+  );
+}

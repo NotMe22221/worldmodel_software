@@ -42,6 +42,7 @@ import {
   githubEvidencePath,
   githubRepositoryParts,
 } from "../worldmodel/github-pr-contract.mjs";
+import { parseOperatorEmails } from "../server/runtime-config.ts";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(
@@ -475,6 +476,14 @@ test("GitHub draft publisher creates branch, commits evidence, opens a draft, an
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("operator access allowlist is explicit, normalized, and rejects malformed identities", () => {
+  const configured = parseOperatorEmails(
+    " Owner@Example.com,ops@example.com, invalid, ,owner@example.com ",
+  );
+  assert.deepEqual([...configured], ["owner@example.com", "ops@example.com"]);
+  assert.equal(parseOperatorEmails(undefined).size, 0);
 });
 
 test("commercial entitlements follow trial, paid, delinquent, and canceled lifecycle states", () => {

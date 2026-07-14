@@ -5,9 +5,15 @@ async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
-  return worker.fetch(new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }), {
-    ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
-  }, { waitUntil() {}, passThroughOnException() {} });
+  return worker.fetch(
+    new Request(`http://localhost${path}`, {
+      headers: { accept: "text/html" },
+    }),
+    {
+      ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
 }
 
 test("server-renders the WorldModel product entry", async () => {
@@ -41,10 +47,20 @@ test("server-renders the identity-bound invitation acceptance route", async () =
   assert.match(html, /CHECKING INVITATION/);
 });
 
+test("server-renders the deny-by-default SaaS operator console", async () => {
+  const response = await render("/operator");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /WORLDMODEL OPERATIONS/);
+  assert.match(html, /Loading control plane/);
+});
+
 test("server-renders public trust, privacy, terms, security, and support disclosures", async () => {
   const expectations = new Map([
-    ["/trust", /Evidence over promises/], ["/privacy", /Product data, explained plainly/],
-    ["/terms", /Terms for controlled evaluation/], ["/security", /Secure defaults, reviewable evidence/],
+    ["/trust", /Evidence over promises/],
+    ["/privacy", /Product data, explained plainly/],
+    ["/terms", /Terms for controlled evaluation/],
+    ["/security", /Secure defaults, reviewable evidence/],
     ["/support", /Help tied to the evidence/],
   ]);
   for (const [path, pattern] of expectations) {

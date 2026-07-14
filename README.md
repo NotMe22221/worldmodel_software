@@ -33,6 +33,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - GitHub App install/OAuth ownership validation, installation-scoped repository sync, and repository import
 - Stripe-hosted subscription checkout with signed, idempotent entitlement webhooks
 - Stripe-hosted customer portal sessions for owner/admin self-service payment methods, invoices, subscription changes, and cancellation
+- Deny-by-default internal operator console for tenant health, commercial lifecycle, usage, and audited cross-tenant support operations without workspace impersonation
 - Append-only tenant audit events with administrator-only spreadsheet-safe CSV export
 - Role-aware JSON portability, reversible workspace deletion reviews, and an evidence-backed commercial launch gate
 - Hashed, revocable developer API keys with least-privilege scopes, durable rate limiting, and CI-oriented project/run endpoints

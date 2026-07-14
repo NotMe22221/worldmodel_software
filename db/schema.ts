@@ -190,6 +190,9 @@ export const supportCases = sqliteTable("support_cases", {
   priority: text("priority").notNull().default("normal"),
   status: text("status").notNull().default("open"),
   body: text("body").notNull(),
+  operatorNote: text("operator_note"),
+  assignedTo: text("assigned_to"),
+  resolvedAt: text("resolved_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

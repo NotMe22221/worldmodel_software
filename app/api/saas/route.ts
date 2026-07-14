@@ -1,7 +1,7 @@
 import { createProject, createSimulationRun, getSaasSnapshot, switchWorkspace, updateWorkspace, verifySimulationRun } from "../../../db/saas";
 import { importGithubRepository } from "../../../db/business";
 import { createWorkspaceInvitation } from "../../../db/team";
-import { businessConfiguration } from "../../../server/runtime-config";
+import { businessConfiguration, hasOperatorAccess } from "../../../server/runtime-config";
 import { launchReadiness } from "../../../server/readiness";
 
 function identity(request: Request) {
@@ -23,8 +23,8 @@ export async function GET(request: Request) {
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
     const snapshot = await getSaasSnapshot(email);
-    const configuration = await businessConfiguration();
-    return Response.json({ ...snapshot, configuration, readiness: launchReadiness({ ...snapshot, configuration }), user: { email, displayName: email.split("@")[0] } });
+    const [configuration, operatorAccess] = await Promise.all([businessConfiguration(), hasOperatorAccess(email)]);
+    return Response.json({ ...snapshot, configuration, operatorAccess, readiness: launchReadiness({ ...snapshot, configuration }), user: { email, displayName: email.split("@")[0] } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load workspace" }, { status: 500 });
   }

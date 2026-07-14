@@ -214,6 +214,7 @@ type Snapshot = {
     billing: { configured: boolean; portalConfigured: boolean };
   };
   user: { email: string; displayName: string };
+  operatorAccess: boolean;
 };
 
 const navItems: Array<{ id: Tab; label: string; icon: string }> = [
@@ -820,7 +821,15 @@ export default function Dashboard() {
             <small>{data.entitlements.message}</small>
             <button onClick={() => setShowUpgrade(true)}>View plans</button>
           </div>
-          <button className="user-chip">
+          <button
+            className="user-chip"
+            onClick={
+              data.operatorAccess
+                ? () => (location.href = "/operator")
+                : undefined
+            }
+            title={data.operatorAccess ? "Open operator console" : undefined}
+          >
             <span>{data.user.displayName.slice(0, 2).toUpperCase()}</span>
             <div>
               <b>{data.user.displayName}</b>

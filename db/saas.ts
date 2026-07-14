@@ -50,6 +50,14 @@ async function ensureRepairProposalColumns(db: Awaited<ReturnType<typeof getD1>>
   if (!existing.has("published_at")) await db.prepare("ALTER TABLE repair_proposals ADD COLUMN published_at TEXT").run();
 }
 
+async function ensureSupportOperationsColumns(db: Awaited<ReturnType<typeof getD1>>) {
+  const columns = await db.prepare("PRAGMA table_info(support_cases)").all<{ name: string }>();
+  const existing = new Set(columns.results.map((column) => column.name));
+  if (!existing.has("operator_note")) await db.prepare("ALTER TABLE support_cases ADD COLUMN operator_note TEXT").run();
+  if (!existing.has("assigned_to")) await db.prepare("ALTER TABLE support_cases ADD COLUMN assigned_to TEXT").run();
+  if (!existing.has("resolved_at")) await db.prepare("ALTER TABLE support_cases ADD COLUMN resolved_at TEXT").run();
+}
+
 export async function ensureSaasSchema() {
   const db = await getD1();
   await db.batch([
@@ -77,7 +85,7 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE INDEX IF NOT EXISTS github_installations_workspace_idx ON github_installations(workspace_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS github_repositories_workspace_idx ON github_repositories(workspace_id)"),
     db.prepare("CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), actor_email TEXT NOT NULL, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT, summary TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS support_cases (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), created_by TEXT NOT NULL, subject TEXT NOT NULL, category TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'open', body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS support_cases (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), created_by TEXT NOT NULL, subject TEXT NOT NULL, category TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'open', body TEXT NOT NULL, operator_note TEXT, assigned_to TEXT, resolved_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS audit_logs_workspace_created_idx ON audit_logs(workspace_id, created_at)"),
     db.prepare("CREATE INDEX IF NOT EXISTS support_cases_workspace_created_idx ON support_cases(workspace_id, created_at)"),
     db.prepare("CREATE TABLE IF NOT EXISTS data_deletion_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), requested_by TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'workspace', status TEXT NOT NULL DEFAULT 'pending', reason TEXT, execute_after TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, canceled_at TEXT, completed_at TEXT)"),
@@ -93,6 +101,7 @@ export async function ensureSaasSchema() {
   await ensureWorkspaceLifecycleColumns(db);
   await ensureRunEvidenceColumns(db);
   await ensureRepairProposalColumns(db);
+  await ensureSupportOperationsColumns(db);
 }
 
 export async function seedWorkspace(email: string) {
