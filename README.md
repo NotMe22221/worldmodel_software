@@ -32,6 +32,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Durable scenario fingerprints, replay evidence, metered simulation minutes, and tenant-isolated report downloads
 - GitHub App install/OAuth ownership validation, installation-scoped repository sync, and repository import
 - Stripe-hosted subscription checkout with signed, idempotent entitlement webhooks
+- Stripe-hosted customer portal sessions for owner/admin self-service payment methods, invoices, subscription changes, and cancellation
 - Append-only tenant audit events with administrator-only spreadsheet-safe CSV export
 - Role-aware JSON portability, reversible workspace deletion reviews, and an evidence-backed commercial launch gate
 - Hashed, revocable developer API keys with least-privilege scopes, durable rate limiting, and CI-oriented project/run endpoints
@@ -55,4 +56,4 @@ Open `http://localhost:3000`. Validate with `npm test` and `npm run lint`.
 
 Copy the keys from `.env.example` into the Sites production environment rather than committing secrets. Configure the GitHub App setup URL as `/api/integrations/github/setup` and its OAuth callback as `/api/integrations/github/callback`. Grant repository **Contents: write** and **Pull requests: write** only if draft-PR publication is enabled. The connection flow validates a one-time workspace state and confirms the installation appears in the authorizing user’s accessible installations before saving repository metadata. Approved handoffs use a short-lived installation token to create an idempotent branch, commit the review packet under `.worldmodel/repairs/`, and open a draft pull request.
 
-Configure Stripe Checkout prices for Starter and Pro, then register `/api/billing/webhook` for `checkout.session.completed` and `customer.subscription.*` lifecycle events. Subscription limits change only after a fresh, matching raw-body webhook signature is processed.
+Configure Stripe Checkout prices for Starter and Pro, activate and brand the Stripe customer portal, then register `/api/billing/webhook` for `checkout.session.completed` and `customer.subscription.*` lifecycle events. Subscription limits change only after a fresh, matching raw-body webhook signature is processed. Portal sessions are created on demand only for authenticated workspace owners/admins with a linked Stripe customer and return to the same WorldModel origin.

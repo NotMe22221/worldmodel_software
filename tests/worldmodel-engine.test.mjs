@@ -11,7 +11,10 @@ import {
 } from "../worldmodel/simulation-engine.mjs";
 import { formatVerificationReport } from "../worldmodel/verification-report.mjs";
 import { createHmac } from "node:crypto";
-import { verifyStripeSignature } from "../server/stripe.ts";
+import {
+  createStripePortalWithKey,
+  verifyStripeSignature,
+} from "../server/stripe.ts";
 import {
   authorizedInstallation,
   publishGithubDraftEvidenceWithToken,
@@ -147,6 +150,53 @@ test("Stripe webhook verification accepts only a fresh matching raw-body signatu
     ),
     false,
   );
+});
+
+test("Stripe billing portal uses a short-lived hosted session and rejects untrusted redirects", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    let captured;
+    globalThis.fetch = async (url, init) => {
+      captured = { url: String(url), init };
+      return new Response(
+        JSON.stringify({
+          url: "https://billing.stripe.com/p/session/test_verified",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const url = await createStripePortalWithKey({
+      customerId: "cus_verified",
+      origin: "https://worldmodel.example",
+      secretKey: "sk_test_secret",
+    });
+    assert.equal(url, "https://billing.stripe.com/p/session/test_verified");
+    assert.equal(
+      captured.url,
+      "https://api.stripe.com/v1/billing_portal/sessions",
+    );
+    assert.equal(captured.init.headers.authorization, "Bearer sk_test_secret");
+    assert.equal(captured.init.body.get("customer"), "cus_verified");
+    assert.equal(
+      captured.init.body.get("return_url"),
+      "https://worldmodel.example/dashboard?billing=portal",
+    );
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ url: "https://evil.example/steal" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    await assert.rejects(
+      createStripePortalWithKey({
+        customerId: "cus_verified",
+        origin: "https://worldmodel.example",
+        secretKey: "sk_test_secret",
+      }),
+      /invalid billing portal URL/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("GitHub connection accepts only an installation visible to the authorized user", () => {

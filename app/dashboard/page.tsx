@@ -113,6 +113,7 @@ type Subscription = {
   plan: string;
   current_period_end: string | null;
   updated_at: string;
+  portal_available: number;
 } | null;
 type AuditLog = {
   id: string;
@@ -210,7 +211,7 @@ type Snapshot = {
   readiness: Readiness;
   configuration: {
     github: { configured: boolean; appSlug: string | null };
-    billing: { configured: boolean };
+    billing: { configured: boolean; portalConfigured: boolean };
   };
   user: { email: string; displayName: string };
 };
@@ -526,6 +527,25 @@ export default function Dashboard() {
       setCreating(false);
     }
   }
+  async function openBillingPortal() {
+    setCreating(true);
+    setError("");
+    try {
+      const response = await fetch("/api/billing/portal", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok)
+        throw new Error(result.error || "Unable to open billing management");
+      location.href = result.url;
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to open billing management",
+      );
+    } finally {
+      setCreating(false);
+    }
+  }
   async function createSupport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setCreating(true);
@@ -731,6 +751,11 @@ export default function Dashboard() {
   const canInvite =
     data.entitlements.canWrite &&
     occupiedSeats < data.entitlements.limits.seats &&
+    (data.workspace.membership_role === "owner" ||
+      data.workspace.membership_role === "admin");
+  const canManageBilling =
+    Boolean(data.subscription?.portal_available) &&
+    data.configuration.billing.portalConfigured &&
     (data.workspace.membership_role === "owner" ||
       data.workspace.membership_role === "admin");
   const lifecycleLabel =
@@ -1755,8 +1780,12 @@ export default function Dashboard() {
                 eyebrow="USAGE & PLAN"
                 title={`${data.entitlements.planName} plan`}
                 description={data.entitlements.message}
-                action="View plans"
-                onAction={() => setShowUpgrade(true)}
+                action={canManageBilling ? "Manage billing" : "View plans"}
+                onAction={
+                  canManageBilling
+                    ? openBillingPortal
+                    : () => setShowUpgrade(true)
+                }
               />
               <section className="billing-grid">
                 <article className="saas-card usage-detail">
@@ -1826,8 +1855,17 @@ export default function Dashboard() {
                     </li>
                     <li>✓ Verified reports and repair evidence</li>
                   </ul>
-                  <button onClick={() => setShowUpgrade(true)}>
-                    Review plan options
+                  <button
+                    onClick={
+                      canManageBilling
+                        ? openBillingPortal
+                        : () => setShowUpgrade(true)
+                    }
+                    disabled={creating}
+                  >
+                    {canManageBilling
+                      ? "Manage subscription & invoices ↗"
+                      : "Review plan options"}
                   </button>
                 </article>
               </section>

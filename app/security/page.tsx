@@ -89,6 +89,11 @@ export default function SecurityPage() {
             WorldModel does not receive card numbers.
           </li>
           <li>
+            Billing management uses short-lived Stripe-hosted portal sessions
+            created only for an authenticated owner or administrator linked to
+            the workspace customer record.
+          </li>
+          <li>
             Subscription changes require a fresh matching Stripe raw-body
             webhook signature and event IDs are processed idempotently.
           </li>
