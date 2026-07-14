@@ -27,6 +27,7 @@ type Workspace = {
   membership_role: string;
   trial_ends_at: string;
   usage_period_start: string;
+  workspace_mode: "sample" | "customer";
 };
 type Project = {
   id: string;
@@ -82,7 +83,7 @@ type Repair = {
   project_branch: string;
 };
 type Member = { email: string; role: string; created_at: string };
-type AvailableWorkspace = { id: string; name: string; role: string };
+type AvailableWorkspace = { id: string; name: string; role: string; workspace_mode: "sample" | "customer" };
 type WorkspaceInvitation = {
   id: string;
   email: string;
@@ -387,6 +388,19 @@ export default function Dashboard() {
       setError(
         reason instanceof Error ? reason.message : "Unable to switch workspace",
       );
+    } finally {
+      setCreating(false);
+    }
+  }
+  async function provisionRealWorkspace() {
+    setCreating(true);
+    setError("");
+    try {
+      const result = await mutate({ action: "provision-customer-workspace" });
+      setTab("projects");
+      setNotice(result.created ? "Clean customer workspace created. Connect your first repository." : "Switched to your existing customer workspace.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to create customer workspace");
     } finally {
       setCreating(false);
     }
@@ -747,6 +761,7 @@ export default function Dashboard() {
   ).length;
   const canCreateProject =
     data.entitlements.canWrite &&
+    data.workspace.workspace_mode === "customer" &&
     data.projects.length < data.entitlements.limits.projects;
   const occupiedSeats = data.members.length + data.pendingInvitations.length;
   const canInvite =
@@ -778,7 +793,9 @@ export default function Dashboard() {
           <div>
             <b>{data.workspace.name}</b>
             <small>
-              {data.entitlements.planName} · {data.workspace.membership_role}
+              {data.workspace.workspace_mode === "sample"
+                ? "Sample"
+                : data.entitlements.planName} · {data.workspace.membership_role}
             </small>
           </div>
           <select
@@ -789,7 +806,7 @@ export default function Dashboard() {
           >
             {data.availableWorkspaces.map((workspace) => (
               <option key={workspace.id} value={workspace.id}>
-                {workspace.name} · {workspace.role}
+                {workspace.name}{workspace.workspace_mode === "sample" ? " (sample)" : ""} · {workspace.role}
               </option>
             ))}
           </select>
@@ -856,10 +873,10 @@ export default function Dashboard() {
             <button
               className="new-project"
               data-testid="new-project"
-              disabled={!canCreateProject}
-              onClick={() => setShowCreate(true)}
+              disabled={creating || (data.workspace.workspace_mode === "customer" && !canCreateProject)}
+              onClick={data.workspace.workspace_mode === "sample" ? provisionRealWorkspace : () => setShowCreate(true)}
             >
-              ＋ New project
+              {data.workspace.workspace_mode === "sample" ? "＋ Clean workspace" : "＋ New project"}
             </button>
           </div>
         </header>
@@ -879,6 +896,19 @@ export default function Dashboard() {
               </button>
             </div>
           )}
+          {data.workspace.workspace_mode === "sample" && (
+            <div className="sample-workspace-banner">
+              <div>
+                <b>Prepared sample workspace</b>
+                <span>
+                  Northstar repositories, runs, repairs, metrics, and reports are illustrative—not customer evidence.
+                </span>
+              </div>
+              <button disabled={creating} onClick={provisionRealWorkspace}>
+                {creating ? "Creating…" : "Create clean workspace →"}
+              </button>
+            </div>
+          )}
           {tab === "overview" && (
             <>
               <section className="welcome-row">
@@ -886,8 +916,9 @@ export default function Dashboard() {
                   <span>MONDAY, JULY 13</span>
                   <h1>Good evening, {data.user.displayName}.</h1>
                   <p>
-                    Your software twins ran three resilience experiments this
-                    week. One verified repair is ready for review.
+                    {data.workspace.workspace_mode === "sample"
+                      ? "Explore the prepared Northstar example, then create a clean workspace for real repository evidence."
+                      : "Your software twins ran three resilience experiments this week. One verified repair is ready for review."}
                   </p>
                 </div>
                 <button onClick={() => (location.href = "/")}>
@@ -968,9 +999,9 @@ export default function Dashboard() {
               <SectionHeader
                 eyebrow="PROJECTS"
                 title="Software twins"
-                description={`${data.projects.length} of ${data.entitlements.limits.projects === 1000 ? "unlimited" : data.entitlements.limits.projects} projects used on ${data.entitlements.planName}.`}
-                action={canCreateProject ? "New project" : undefined}
-                onAction={() => setShowCreate(true)}
+                description={data.workspace.workspace_mode === "sample" ? "This prepared repository is isolated from customer work. Create a clean workspace before connecting a real repository." : `${data.projects.length} of ${data.entitlements.limits.projects === 1000 ? "unlimited" : data.entitlements.limits.projects} projects used on ${data.entitlements.planName}.`}
+                action={data.workspace.workspace_mode === "sample" ? "Create clean workspace" : canCreateProject ? "New project" : undefined}
+                onAction={data.workspace.workspace_mode === "sample" ? provisionRealWorkspace : () => setShowCreate(true)}
               />
               <section className="project-grid">
                 {data.projects.map((project) => (
@@ -1004,18 +1035,22 @@ export default function Dashboard() {
                 ))}
                 <button
                   className="add-project-card"
-                  disabled={!canCreateProject}
-                  onClick={() => setShowCreate(true)}
+                  disabled={creating || (data.workspace.workspace_mode === "customer" && !canCreateProject)}
+                  onClick={data.workspace.workspace_mode === "sample" ? provisionRealWorkspace : () => setShowCreate(true)}
                 >
                   ＋
                   <b>
-                    {canCreateProject
+                    {data.workspace.workspace_mode === "sample"
+                      ? "Create a clean customer workspace"
+                      : canCreateProject
                       ? "Connect another repository"
                       : "Project limit reached"}
                   </b>
                   <small>
-                    {canCreateProject
-                      ? "GitHub, GitLab, or prepared sample"
+                    {data.workspace.workspace_mode === "sample"
+                      ? "Sample evidence never mixes with real repositories"
+                      : canCreateProject
+                      ? "Connect a tenant-owned repository"
                       : "Upgrade to add another software twin"}
                   </small>
                 </button>
@@ -1033,6 +1068,12 @@ export default function Dashboard() {
               />
               <section className="saas-card full-table">
                 <RunTable runs={data.runs} />
+                {!data.runs.length && (
+                  <div className="saas-empty-state">
+                    <b>No simulations yet</b>
+                    <p>Connect a repository, map its system graph, and run a repeatable failure scenario.</p>
+                  </div>
+                )}
               </section>
             </>
           )}
@@ -1048,7 +1089,7 @@ export default function Dashboard() {
                   .filter((run) => run.status === "verified")
                   .map((run) => (
                     <article key={run.id}>
-                      <span>VERIFIED REPORT</span>
+                      <span>{data.workspace.workspace_mode === "sample" ? "SAMPLE VERIFIED REPORT" : "VERIFIED REPORT"}</span>
                       <h3>{run.scenario}</h3>
                       <p>
                         {run.project_name} · {dateLabel(run.created_at)}
@@ -1062,7 +1103,7 @@ export default function Dashboard() {
                       <ul>
                         <li>✓ Immutable replay matched</li>
                         <li>✓ Journey success {run.journey_success}%</li>
-                        <li>✓ Tenant-owned evidence</li>
+                        <li>✓ {data.workspace.workspace_mode === "sample" ? "Illustrative sample evidence" : "Tenant-owned evidence"}</li>
                       </ul>
                       <button
                         onClick={() =>
@@ -1073,6 +1114,12 @@ export default function Dashboard() {
                       </button>
                     </article>
                   ))}
+                {!data.runs.some((run) => run.status === "verified") && (
+                  <div className="saas-empty-state report-empty">
+                    <b>No verification reports yet</b>
+                    <p>Verified before-and-after reports appear after an identical scenario replay passes.</p>
+                  </div>
+                )}
               </section>
             </>
           )}

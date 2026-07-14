@@ -29,6 +29,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Disposable virtual-lab harness that seeds data, starts five HTTP services, injects and recovers a fault, and destroys its temporary workspace
 - Downloadable verification report with residual risks and draft-PR artifact
 - Tenant-backed workspace with projects, run history, reports, usage, roles, integrations, and plan state
+- Explicit sample/customer workspace modes with one-click idempotent clean-workspace provisioning, isolated repositories and evidence, sample-labeled exports, and sample draft-PR publication denial
 - Durable scenario fingerprints, replay evidence, metered simulation minutes, and tenant-isolated report downloads
 - GitHub App install/OAuth ownership validation, installation-scoped repository sync, and repository import
 - Stripe-hosted subscription checkout with signed, idempotent entitlement webhooks

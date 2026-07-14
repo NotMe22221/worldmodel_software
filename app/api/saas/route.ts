@@ -1,4 +1,4 @@
-import { createProject, createSimulationRun, getSaasSnapshot, switchWorkspace, updateWorkspace, verifySimulationRun } from "../../../db/saas";
+import { createProject, createSimulationRun, getSaasSnapshot, provisionCustomerWorkspace, switchWorkspace, updateWorkspace, verifySimulationRun } from "../../../db/saas";
 import { importGithubRepository } from "../../../db/business";
 import { createWorkspaceInvitation } from "../../../db/team";
 import { businessConfiguration, hasOperatorAccess } from "../../../server/runtime-config";
@@ -14,7 +14,7 @@ function identity(request: Request) {
 
 function failure(error: unknown, fallback: string) {
   const message = error instanceof Error ? error.message : fallback;
-  const status = message.includes("role") ? 403 : message.includes("not found") ? 404 : message.includes("plan") || message.includes("Payment") ? 402 : message.includes("limit") ? 429 : 500;
+  const status = message.includes("role") ? 403 : message.includes("not found") ? 404 : message.includes("clean customer workspace") || message.includes("Sample repair") ? 409 : message.includes("plan") || message.includes("Payment") ? 402 : message.includes("limit") ? 429 : 500;
   return Response.json({ error: message }, { status });
 }
 
@@ -45,6 +45,10 @@ export async function POST(request: Request) {
     if (!payload.workspaceId) return Response.json({ error: "Choose a workspace" }, { status: 400 });
     try { return Response.json(await switchWorkspace(email, payload.workspaceId)); }
     catch (error) { return failure(error, "Unable to switch workspace"); }
+  }
+  if (payload.action === "provision-customer-workspace") {
+    try { return Response.json(await provisionCustomerWorkspace(email), { status: 201 }); }
+    catch (error) { return failure(error, "Unable to provision customer workspace"); }
   }
   if (payload.action === "create-run") {
     const scenario = payload.scenario;

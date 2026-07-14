@@ -152,6 +152,10 @@ export async function prepareRepairPullRequest(
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin"]);
   requireWriteEntitlement(snapshot.entitlements);
+  if (String(snapshot.workspace.workspace_mode) === "sample")
+    throw new Error(
+      "Sample repair candidates cannot be published. Create a clean customer workspace and rerun the scenario against a connected repository",
+    );
   const repair = findRepair(snapshot, proposalId);
   try {
     repairTransition(String(repair.status), "prepare-pr");
@@ -210,6 +214,10 @@ export async function publishRepairPullRequest(
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin"]);
   requireWriteEntitlement(snapshot.entitlements);
+  if (String(snapshot.workspace.workspace_mode) === "sample")
+    throw new Error(
+      "Sample repair candidates cannot be published. Create a clean customer workspace and rerun the scenario against a connected repository",
+    );
   const repair = findRepair(snapshot, proposalId);
   if (String(repair.status) !== "pr_ready")
     throw new Error("The draft pull request handoff has not been prepared");

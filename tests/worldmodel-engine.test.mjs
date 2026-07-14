@@ -117,6 +117,23 @@ test("verification report preserves immutable replay evidence and before-after m
   assert.match(report, /tenant-owned simulation record/);
 });
 
+test("sample verification reports cannot masquerade as customer evidence", () => {
+  const report = formatVerificationReport({
+    id: "run_sample",
+    workspace_mode: "sample",
+    project_name: "Checkout resilience",
+    repository: "shopstream/demo-store",
+    branch: "main",
+    scenario: "Traffic spike",
+    before_score: 42,
+    after_score: 91,
+  });
+  assert.match(report, /WORLDMODEL SAMPLE VERIFICATION REPORT/);
+  assert.match(report, /illustrative and is not evidence from a customer repository/);
+  assert.match(report, /Create a clean customer workspace/);
+  assert.doesNotMatch(report, /tenant-owned simulation record/);
+});
+
 test("Stripe webhook verification accepts only a fresh matching raw-body signature", async () => {
   const body = '{"id":"evt_verified","type":"checkout.session.completed"}';
   const secret = "whsec_test_worldmodel";

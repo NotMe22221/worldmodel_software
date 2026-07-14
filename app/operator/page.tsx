@@ -6,6 +6,8 @@ import "./operator.css";
 
 type Totals = {
   workspaces: number;
+  customer_workspaces: number;
+  sample_workspaces: number;
   members: number;
   simulations: number;
   verified_runs: number;
@@ -16,6 +18,7 @@ type Totals = {
 type Workspace = {
   id: string;
   name: string;
+  workspace_mode: "sample" | "customer";
   plan: string;
   simulation_minutes: number;
   monthly_limit: number;
@@ -176,9 +179,9 @@ export default function OperatorPage() {
         </div>
         <section className="operator-metrics">
           <article>
-            <span>WORKSPACES</span>
-            <strong>{data.totals.workspaces}</strong>
-            <small>{data.totals.members} total members</small>
+            <span>CUSTOMER WORKSPACES</span>
+            <strong>{data.totals.customer_workspaces}</strong>
+            <small>{data.totals.sample_workspaces} sample · {data.totals.members} total members</small>
           </article>
           <article>
             <span>ACTIVE SUBSCRIPTIONS</span>
@@ -219,7 +222,7 @@ export default function OperatorPage() {
                 <span>
                   <b>{workspace.name}</b>
                   <small>
-                    {workspace.id} · created {date(workspace.created_at)}
+                    {workspace.workspace_mode === "sample" ? "SAMPLE" : "CUSTOMER"} · {workspace.id} · created {date(workspace.created_at)}
                   </small>
                 </span>
                 <span>

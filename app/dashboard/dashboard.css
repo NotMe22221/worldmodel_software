@@ -39,6 +39,7 @@
 .new-project,.section-header>button{height:32px;border:0;border-radius:6px;background:#17211d;color:#fff;padding:0 12px;font-size:8px;font-weight:700}
 .new-project:disabled,.add-project-card:disabled{opacity:.45;cursor:not-allowed}
 .saas-content{padding:32px;max-width:1400px;margin:0 auto}
+.sample-workspace-banner{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:-12px 0 18px;padding:13px 15px;border:1px solid #b9d9c8;border-radius:7px;background:#edf8f2;color:#173f2c}.sample-workspace-banner>div{display:flex;flex-direction:column;gap:4px}.sample-workspace-banner b{font-size:9px}.sample-workspace-banner span{font-size:7px;line-height:1.5;color:#47705d}.sample-workspace-banner button{border:0;background:#173f2c;color:#fff;border-radius:5px;height:30px;padding:0 11px;font-size:7px;white-space:nowrap}.sample-workspace-banner button:disabled{opacity:.55}
 .welcome-row{display:flex;justify-content:space-between;align-items:end;margin-bottom:25px}
 .welcome-row span,.section-header span,.saas-card header span,.saas-card>span{font-size:7px;letter-spacing:.14em;color:#839089;font-weight:700}
 .welcome-row h1,.section-header h1{font-size:28px;letter-spacing:-.045em;margin:7px 0}
@@ -92,6 +93,7 @@
 .run-table article>div>span{display:flex;flex-direction:column}
 .run-table article small{font-size:6px;color:#8c9691}
 .run-table article button{border:0;background:none}
+.saas-empty-state{padding:38px 20px;text-align:center;color:#77827c}.saas-empty-state b{display:block;font-size:10px;color:#28342e}.saas-empty-state p{font-size:8px;line-height:1.6}.report-empty{background:#fff;border:1px dashed #ccd5d0;border-radius:8px;display:grid;place-items:center;min-height:190px}
 .run-score{display:flex;gap:5px}
 .run-score em{font-style:normal;color:#9ba39f}
 .run-score strong{color:#2a8c5d}
@@ -256,6 +258,7 @@ to{transform:translateX(250%)}
 }
 
 @media(max-width:620px){.saas-shell{display:block}
+.sample-workspace-banner{align-items:flex-start;flex-direction:column}.sample-workspace-banner button{width:100%}
 .saas-sidebar{position:fixed;z-index:10;bottom:0;top:auto;width:100%;height:54px;min-height:0;padding:6px}
 .saas-brand,.workspace-switcher{display:none}
 .saas-sidebar nav{width:100%;flex-direction:row;justify-content:space-around}

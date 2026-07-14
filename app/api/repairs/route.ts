@@ -25,6 +25,7 @@ function failure(error: unknown) {
             : message.includes("plan") || message.includes("Payment")
               ? 402
               : message.includes("must be approved") ||
+                  message.includes("Sample repair") ||
                   message.includes("not awaiting") ||
                   message.includes("not ready")
                 ? 409
