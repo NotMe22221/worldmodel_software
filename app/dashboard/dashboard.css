@@ -94,7 +94,7 @@
 .run-score em{font-style:normal;color:#9ba39f}
 .run-score strong{color:#2a8c5d}
 .readiness-card{padding:16px}
-.readiness-score{margin:17px auto 10px;width:92px;height:92px;border-radius:50%;background:conic-gradient(#4cc58a 317deg,#e7ebe8 0);display:grid;place-items:center;position:relative}
+.readiness-score{--readiness:0deg;margin:17px auto 10px;width:92px;height:92px;border-radius:50%;background:conic-gradient(#4cc58a var(--readiness),#e7ebe8 0);display:grid;place-items:center;position:relative}
 .readiness-score:after{content:"";position:absolute;inset:7px;background:#fff;border-radius:50%}
 .readiness-score strong,.readiness-score small{z-index:1}
 .readiness-score strong{font-size:25px}
@@ -149,6 +149,9 @@
 .repository-picker>div:first-child{border-top:0}.repository-picker span{display:flex;flex-direction:column;min-width:0}
 .repository-picker b{font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.repository-picker small{font-size:6px;color:#849089;margin-top:3px}
 .repository-picker button{height:24px;border:1px solid #d6dcd8;background:#fff;border-radius:4px;font-size:7px}.repository-picker em{font-size:6px;color:#278257;font-style:normal}
+.readiness-layout{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
+.readiness-summary{padding:22px;position:sticky;top:74px;text-align:center}.readiness-summary>span{font-size:7px;letter-spacing:.13em;color:#718078}.readiness-summary h3{font-size:13px;margin:14px 0 6px}.readiness-summary p{font-size:8px;color:#75817b;line-height:1.6}.readiness-score.large{width:126px;height:126px}.readiness-score.large:after{inset:9px}.readiness-score.large strong{font-size:32px}.readiness-score.large small{top:76px}
+.readiness-list{display:grid;gap:9px}.readiness-item{padding:14px;display:grid;grid-template-columns:31px 1fr;gap:12px}.check-state{width:27px;height:27px;border-radius:50%;display:grid;place-items:center;background:#ffe9e5;color:#a54439;font-size:10px;font-weight:800}.readiness-item.passed .check-state{background:#def5e8;color:#20784e}.readiness-item>div>header{display:flex;justify-content:space-between;align-items:center}.readiness-item header b{font-size:9px}.readiness-item header span{font-size:6px;text-transform:uppercase;letter-spacing:.08em;color:#87928c}.readiness-item p{font-size:7px;color:#6f7b75;margin:6px 0;line-height:1.5}.readiness-item form{display:flex;gap:7px;margin-top:10px}.readiness-item input{height:31px;flex:1;border:1px solid #d7ddd9;border-radius:5px;padding:0 9px;font-size:7px}.readiness-item button{height:31px;border:1px solid #ced7d2;background:#fff;border-radius:5px;padding:0 10px;font-size:7px;white-space:nowrap}.readiness-item.blocked button{background:#17211d;color:#fff;border-color:#17211d}
 .audit-table{overflow:hidden}
 .audit-table>header,.audit-table>div{display:grid;grid-template-columns:2.2fr 1.2fr .8fr .6fr;gap:12px;align-items:center;padding:0 16px}
 .audit-table>header{height:34px;background:#fafbfa;font-size:6px;letter-spacing:.1em;color:#7e8983}
@@ -194,6 +197,7 @@
 .toggle-row b{font-size:8px}
 .toggle-row small{font-size:7px;color:#7d8882;margin-top:3px}
 .toggle-row input{width:30px;height:16px}
+.data-controls p{font-size:8px;color:#717d76;line-height:1.6}.settings-grid .data-controls form{padding:0}.data-controls>button,.data-controls form>button{height:31px;background:#17211d;color:#fff;border:0;border-radius:5px;padding:0 12px;font-size:8px}.danger-zone{border-color:#e9c8c4}.danger-zone h3{color:#8e3932}.danger-zone>button,.danger-zone form>button{background:#9d3f37}
 
 .saas-modal-backdrop{position:fixed;inset:0;background:#050907aa;backdrop-filter:blur(4px);z-index:20;display:grid;place-items:center;padding:20px}
 .saas-modal,.upgrade-modal{position:relative;background:#fff;border-radius:10px;width:min(460px,100%);padding:25px;box-shadow:0 30px 90px #0006}
@@ -237,7 +241,8 @@ to{transform:translateX(250%)}
 .sidebar-bottom{display:none}
 .workspace-switcher{justify-content:center}
 .saas-kpis{grid-template-columns:1fr 1fr}
-.overview-grid,.overview-grid.bottom,.billing-grid,.settings-grid,.integration-grid,.support-grid{grid-template-columns:1fr}
+.overview-grid,.overview-grid.bottom,.billing-grid,.settings-grid,.integration-grid,.support-grid,.readiness-layout{grid-template-columns:1fr}
+.readiness-summary{position:static}
 .project-grid,.report-grid-saas{grid-template-columns:1fr 1fr}
 }
 

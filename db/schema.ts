@@ -132,3 +132,28 @@ export const supportCases = sqliteTable("support_cases", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const dataDeletionRequests = sqliteTable("data_deletion_requests", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  requestedBy: text("requested_by").notNull(),
+  scope: text("scope").notNull().default("workspace"),
+  status: text("status").notNull().default("pending"),
+  reason: text("reason"),
+  executeAfter: text("execute_after").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  canceledAt: text("canceled_at"),
+  completedAt: text("completed_at"),
+});
+
+export const launchChecks = sqliteTable("launch_checks", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  checkKey: text("check_key").notNull(),
+  passed: integer("passed", { mode: "boolean" }).notNull().default(false),
+  evidence: text("evidence"),
+  attestedBy: text("attested_by").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("launch_checks_workspace_key_idx").on(table.workspaceId, table.checkKey),
+]);

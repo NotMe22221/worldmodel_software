@@ -7,6 +7,7 @@ import { createHmac } from "node:crypto";
 import { verifyStripeSignature } from "../server/stripe.ts";
 import { authorizedInstallation } from "../server/github.ts";
 import { safeCsvCell } from "../worldmodel/safe-csv.mjs";
+import { launchReadiness } from "../server/readiness.ts";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(await readFile(new URL("../sample-app/worldmodel.manifest.json", import.meta.url)));
@@ -68,4 +69,29 @@ test("GitHub connection accepts only an installation visible to the authorized u
 test("audit CSV export neutralizes spreadsheet formulas and escapes quotes", () => {
   assert.equal(safeCsvCell('=HYPERLINK("https://evil.test")'), '"\'=HYPERLINK(""https://evil.test"")"');
   assert.equal(safeCsvCell('review "ready"'), '"review ""ready"""');
+});
+
+test("commercial launch gate is derived from live state and owner attestations", () => {
+  const baseline = launchReadiness({
+    projects: [{}], runs: [{ status: "verified" }], githubInstallations: [], subscription: null, auditAccess: false,
+    launchChecks: [
+      { check_key: "legal_review", passed: 1, evidence: "Counsel review 2026-07-13" },
+      { check_key: "security_review", passed: 1, evidence: "Independent assessment" },
+      { check_key: "incident_plan", passed: 1, evidence: "Runbook owner assigned" },
+      { check_key: "support_owner", passed: 1, evidence: "Support owner assigned" },
+    ],
+    configuration: { github: { configured: false }, billing: { configured: false } },
+  });
+  assert.equal(baseline.passed, 7);
+  assert.equal(baseline.total, 9);
+  assert.equal(baseline.ready, false);
+  assert.match(baseline.checks.find((check) => check.key === "github_live").evidence, /credentials are missing/);
+
+  const ready = launchReadiness({
+    projects: [{}], runs: [{ status: "verified" }], githubInstallations: [{}], subscription: { status: "active" }, auditAccess: true,
+    launchChecks: baseline.checks.filter((check) => check.source === "attested").map((check) => ({ check_key: check.key, passed: 1, evidence: check.evidence })),
+    configuration: { github: { configured: true }, billing: { configured: true } },
+  });
+  assert.equal(ready.score, 100);
+  assert.equal(ready.ready, true);
 });

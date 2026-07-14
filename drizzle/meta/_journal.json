@@ -29,6 +29,13 @@
       "when": 1783993821392,
       "tag": "0003_harsh_stone_men",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1783994503551,
+      "tag": "0004_outstanding_squadron_sinister",
+      "breakpoints": true
     }
   ]
 }

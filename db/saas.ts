@@ -55,6 +55,10 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS support_cases (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), created_by TEXT NOT NULL, subject TEXT NOT NULL, category TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'open', body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS audit_logs_workspace_created_idx ON audit_logs(workspace_id, created_at)"),
     db.prepare("CREATE INDEX IF NOT EXISTS support_cases_workspace_created_idx ON support_cases(workspace_id, created_at)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS data_deletion_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), requested_by TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'workspace', status TEXT NOT NULL DEFAULT 'pending', reason TEXT, execute_after TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, canceled_at TEXT, completed_at TEXT)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS launch_checks (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), check_key TEXT NOT NULL, passed INTEGER NOT NULL DEFAULT 0, evidence TEXT, attested_by TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS launch_checks_workspace_key_idx ON launch_checks(workspace_id, check_key)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS deletion_requests_workspace_idx ON data_deletion_requests(workspace_id, created_at)"),
   ]);
   await ensureRunEvidenceColumns(db);
 }
@@ -94,7 +98,9 @@ export async function getSaasSnapshot(email: string) {
   const auditAccess = workspace.membership_role === "owner" || workspace.membership_role === "admin";
   const auditLogs = auditAccess ? await db.prepare("SELECT id, actor_email, action, target_type, target_id, summary, created_at FROM audit_logs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : { results: [] };
   const supportCases = auditAccess ? await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? AND lower(created_by) = lower(?) ORDER BY created_at DESC LIMIT 50").bind(workspace.id, email).all();
-  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results };
+  const launchChecks = await db.prepare("SELECT check_key, passed, evidence, updated_at FROM launch_checks WHERE workspace_id = ? ORDER BY check_key").bind(workspace.id).all();
+  const deletionRequests = workspace.membership_role === "owner" ? await db.prepare("SELECT id, scope, status, reason, execute_after, created_at, canceled_at, completed_at FROM data_deletion_requests WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 10").bind(workspace.id).all() : { results: [] };
+  return { workspace, projects: projects.results, runs: runs.results, members: members.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results };
 }
 
 export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>, allowed: string[]) {

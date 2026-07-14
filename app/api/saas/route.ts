@@ -1,6 +1,7 @@
 import { createProject, createSimulationRun, getSaasSnapshot, inviteWorkspaceMember, updateWorkspace, verifySimulationRun } from "../../../db/saas";
 import { importGithubRepository } from "../../../db/business";
 import { businessConfiguration } from "../../../server/runtime-config";
+import { launchReadiness } from "../../../server/readiness";
 
 function identity(request: Request) {
   const email = request.headers.get("oai-authenticated-user-email");
@@ -20,7 +21,9 @@ export async function GET(request: Request) {
   const email = identity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
-    return Response.json({ ...(await getSaasSnapshot(email)), configuration: await businessConfiguration(), user: { email, displayName: email.split("@")[0] } });
+    const snapshot = await getSaasSnapshot(email);
+    const configuration = await businessConfiguration();
+    return Response.json({ ...snapshot, configuration, readiness: launchReadiness({ ...snapshot, configuration }), user: { email, displayName: email.split("@")[0] } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load workspace" }, { status: 500 });
   }
