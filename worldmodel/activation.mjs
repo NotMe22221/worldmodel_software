@@ -6,25 +6,33 @@ export function buildWorkspaceActivation({
   invitations = [],
 }) {
   if (workspaceMode !== "customer") return null;
+  const verifiedProjects = projects.filter((project) =>
+    Boolean(project.repository_verified),
+  );
+  const verifiedProjectIds = new Set(
+    verifiedProjects.map((project) => project.id),
+  );
+  const ownedRuns = runs.filter((run) => verifiedProjectIds.has(run.project_id));
   const steps = [
     {
       key: "repository",
       label: "Connect a repository",
-      complete: projects.length > 0,
-      completedAt: projects.at(-1)?.created_at || null,
+      complete: verifiedProjects.length > 0,
+      completedAt:
+        verifiedProjects.at(-1)?.created_at || null,
     },
     {
       key: "simulation",
       label: "Run the first failure simulation",
-      complete: runs.length > 0,
-      completedAt: runs.at(-1)?.created_at || null,
+      complete: ownedRuns.length > 0,
+      completedAt: ownedRuns.at(-1)?.created_at || null,
     },
     {
       key: "verification",
       label: "Verify an identical replay",
-      complete: runs.some((run) => run.status === "verified"),
+      complete: ownedRuns.some((run) => run.status === "verified"),
       completedAt:
-        runs.find((run) => run.status === "verified")?.verified_at || null,
+        ownedRuns.find((run) => run.status === "verified")?.verified_at || null,
     },
     {
       key: "team",

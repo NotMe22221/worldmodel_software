@@ -55,9 +55,13 @@ export async function importGithubRepository(email: string, repositoryId: string
   const repository = await db.prepare("SELECT repository_id, full_name, default_branch FROM github_repositories WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).first<{ repository_id: string; full_name: string; default_branch: string }>();
   if (!repository) throw new Error("GitHub repository was not found in this workspace");
   const existing = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? AND lower(repository) = lower(?) LIMIT 1").bind(snapshot.workspace.id, repository.full_name).first();
-  if (existing) return existing;
+  if (existing) {
+    await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(existing.id, snapshot.workspace.id).run();
+    await db.prepare("UPDATE github_repositories SET selected = 1 WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).run();
+    return db.prepare("SELECT * FROM projects WHERE id = ?").bind(existing.id).first();
+  }
   const name = repository.full_name.split("/").pop()?.replaceAll("-", " ") || repository.full_name;
-  const project = await createProject(email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch });
+  const project = await createProject(email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch, sourceKind: "github", repositoryVerified: true });
   await db.prepare("UPDATE github_repositories SET selected = 1 WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).run();
   await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "repository.imported", targetType: "github_repository", targetId: repositoryId, summary: `Imported ${repository.full_name} from GitHub` });
   return project;

@@ -114,6 +114,7 @@
 .project-card-top{display:flex;justify-content:space-between}
 .project-grid h3{font-size:13px;margin:15px 0 4px}
 .project-grid p{font-size:7px;color:#748079}
+.repository-proof{display:inline-flex;width:max-content;border:1px solid #d7ddd9;border-radius:10px;padding:3px 6px;color:#7d8882;font-size:6px;font-style:normal;letter-spacing:.05em}.repository-proof.verified{border-color:#b9e4cc;background:#edf8f2;color:#267a51}.repository-proof.unverified{border-color:#e8cfb8;background:#fff7ef;color:#9a5d2d}.project-grid .repository-proof{margin-top:4px}
 .project-grid dl{display:grid;grid-template-columns:repeat(3,1fr);border-block:1px solid #e3e7e4;margin:15px 0}
 .project-grid dl div{padding:9px 0}
 .project-grid dt{font-size:6px;color:#8c9691}

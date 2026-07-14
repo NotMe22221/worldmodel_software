@@ -157,6 +157,10 @@ export async function prepareRepairPullRequest(
       "Sample repair candidates cannot be published. Create a clean customer workspace and rerun the scenario against a connected repository",
     );
   const repair = findRepair(snapshot, proposalId);
+  if (!repair.repository_verified)
+    throw new Error(
+      "Repository ownership is unverified. Import this repository through the workspace GitHub installation before preparing a pull request",
+    );
   try {
     repairTransition(String(repair.status), "prepare-pr");
   } catch {
@@ -219,6 +223,10 @@ export async function publishRepairPullRequest(
       "Sample repair candidates cannot be published. Create a clean customer workspace and rerun the scenario against a connected repository",
     );
   const repair = findRepair(snapshot, proposalId);
+  if (!repair.repository_verified)
+    throw new Error(
+      "Repository ownership is unverified. Import this repository through the workspace GitHub installation before publishing a pull request",
+    );
   if (String(repair.status) !== "pr_ready")
     throw new Error("The draft pull request handoff has not been prepared");
   if (String(repair.pr_status) === "published" && repair.pr_url)

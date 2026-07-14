@@ -46,6 +46,15 @@ async function ensureRunEvidenceColumns(db: Awaited<ReturnType<typeof getD1>>) {
   }
 }
 
+async function ensureProjectProvenanceColumns(db: Awaited<ReturnType<typeof getD1>>) {
+  const columns = await db.prepare("PRAGMA table_info(projects)").all<{ name: string }>();
+  const existing = new Set(columns.results.map((column) => column.name));
+  if (!existing.has("source_kind")) await db.prepare("ALTER TABLE projects ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'manual'").run();
+  if (!existing.has("repository_verified")) await db.prepare("ALTER TABLE projects ADD COLUMN repository_verified INTEGER NOT NULL DEFAULT 0").run();
+  await db.prepare("UPDATE projects SET source_kind = 'sample', repository_verified = 0 WHERE repository = 'shopstream/demo-store' AND id LIKE 'proj_checkout_%'").run();
+  await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1 WHERE EXISTS (SELECT 1 FROM github_repositories gr WHERE gr.workspace_id = projects.workspace_id AND lower(gr.full_name) = lower(projects.repository) AND gr.selected = 1)").run();
+}
+
 async function ensureWorkspaceLifecycleColumns(db: Awaited<ReturnType<typeof getD1>>) {
   const columns = await db.prepare("PRAGMA table_info(workspaces)").all<{ name: string }>();
   const existing = new Set(columns.results.map((column) => column.name));
@@ -75,7 +84,7 @@ export async function ensureSaasSchema() {
   const db = await getD1();
   await db.batch([
     db.prepare("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_email TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'trial', simulation_minutes INTEGER NOT NULL DEFAULT 0, monthly_limit INTEGER NOT NULL DEFAULT 500, workspace_mode TEXT NOT NULL DEFAULT 'customer', trial_ends_at TEXT, usage_period_start TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, repository TEXT NOT NULL, branch TEXT NOT NULL DEFAULT 'main', status TEXT NOT NULL DEFAULT 'ready', resilience_score INTEGER NOT NULL DEFAULT 0, service_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, repository TEXT NOT NULL, branch TEXT NOT NULL DEFAULT 'main', source_kind TEXT NOT NULL DEFAULT 'manual', repository_verified INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'ready', resilience_score INTEGER NOT NULL DEFAULT 0, service_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS simulation_runs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), scenario TEXT NOT NULL, status TEXT NOT NULL, before_score INTEGER NOT NULL, after_score INTEGER, error_rate TEXT NOT NULL, latency_ms INTEGER NOT NULL, journey_success INTEGER NOT NULL, duration_seconds INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS repair_proposals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), run_id TEXT NOT NULL REFERENCES simulation_runs(id), status TEXT NOT NULL DEFAULT 'ready_for_review', title TEXT NOT NULL, summary TEXT NOT NULL, files_json TEXT NOT NULL DEFAULT '[]', tests_json TEXT NOT NULL DEFAULT '[]', risks_json TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, reviewer_email TEXT, decision_note TEXT, requested_at TEXT, approved_by TEXT, approved_at TEXT, pr_status TEXT NOT NULL DEFAULT 'not_requested', branch_name TEXT, pr_url TEXT, pr_number INTEGER, pr_error TEXT, published_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS repair_proposals_run_idx ON repair_proposals(run_id)"),
@@ -112,6 +121,7 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS api_rate_buckets_key_start_idx ON api_rate_buckets(api_key_id, bucket_start)"),
   ]);
   await ensureWorkspaceLifecycleColumns(db);
+  await ensureProjectProvenanceColumns(db);
   await ensureRunEvidenceColumns(db);
   await ensureRepairProposalColumns(db);
   await ensureSupportOperationsColumns(db);
@@ -127,7 +137,7 @@ export async function seedWorkspace(email: string) {
   await db.batch([
     db.prepare("INSERT OR IGNORE INTO workspaces (id, name, owner_email, plan, simulation_minutes, monthly_limit, workspace_mode, trial_ends_at, usage_period_start) VALUES (?, ?, ?, ?, ?, ?, 'sample', ?, ?)").bind(workspaceId, "Northstar Engineering", email, "pro_trial", 214, 500, new Date(Date.now() + 14 * 86_400_000).toISOString(), usagePeriod().start),
     db.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, email, role) VALUES (?, ?, ?)").bind(workspaceId, email, "owner"),
-    db.prepare("INSERT OR IGNORE INTO projects (id, workspace_id, name, repository, branch, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(projectId, workspaceId, "Checkout resilience", "shopstream/demo-store", "main", "ready", 94, 7),
+    db.prepare("INSERT OR IGNORE INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, 'sample', 0, ?, ?, ?)").bind(projectId, workspaceId, "Checkout resilience", "shopstream/demo-store", "main", "ready", 94, 7),
     db.prepare("INSERT OR IGNORE INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(`run_payment_${suffix}`, projectId, "Payment outage", "verified", 31, 94, "0.4%", 488, 100, 120, "2026-07-13T23:42:00Z"),
     db.prepare("INSERT OR IGNORE INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(`run_database_${suffix}`, projectId, "Database slowdown", "completed", 38, null, "21.4%", 3190, 54, 120, "2026-07-12T18:20:00Z"),
     db.prepare("INSERT OR IGNORE INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(`run_traffic_${suffix}`, projectId, "Traffic spike", "completed", 42, null, "18.7%", 2840, 61, 120, "2026-07-11T16:08:00Z"),
@@ -150,9 +160,9 @@ export async function getSaasSnapshot(email: string) {
     workspace.usage_period_start = period.start;
   }
   const projects = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC").bind(workspace.id).all();
-  const runs = await db.prepare("SELECT r.*, p.name AS project_name FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 20").bind(workspace.id).all();
+  const runs = await db.prepare("SELECT r.*, p.name AS project_name, p.source_kind, p.repository_verified FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 20").bind(workspace.id).all();
   await db.prepare("INSERT OR IGNORE INTO repair_proposals (id, workspace_id, run_id, status, title, summary, files_json, tests_json, risks_json, created_by, requested_at) SELECT 'repair_' || substr(r.id, 5), ?, r.id, 'ready_for_review', 'Graceful ' || lower(r.scenario) || ' recovery', 'Codex generated bounded timeout, idempotency, and recovery controls for the verified scenario.', '[\"src/payment.ts\",\"tests/checkout.spec.mjs\"]', '[\"Identical scenario replay\",\"Critical user journey\",\"Duplicate-order regression\"]', '[\"Regional failover remains unverified\",\"Queue saturation beyond the tested load remains unverified\"]', 'codex@system.worldmodel', CURRENT_TIMESTAMP FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? AND r.status = 'verified'").bind(workspace.id, workspace.id).run();
-  const repairs = await db.prepare("SELECT rp.*, r.scenario, r.scenario_fingerprint, r.before_score, r.after_score, r.verified_at, p.name AS project_name, p.repository, p.branch AS project_branch FROM repair_proposals rp JOIN simulation_runs r ON r.id = rp.run_id JOIN projects p ON p.id = r.project_id WHERE rp.workspace_id = ? ORDER BY rp.updated_at DESC").bind(workspace.id).all();
+  const repairs = await db.prepare("SELECT rp.*, r.scenario, r.scenario_fingerprint, r.before_score, r.after_score, r.verified_at, p.name AS project_name, p.repository, p.branch AS project_branch, p.source_kind, p.repository_verified FROM repair_proposals rp JOIN simulation_runs r ON r.id = rp.run_id JOIN projects p ON p.id = r.project_id WHERE rp.workspace_id = ? ORDER BY rp.updated_at DESC").bind(workspace.id).all();
   const members = await db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? ORDER BY created_at").bind(workspace.id).all();
   const availableWorkspaces = await db.prepare("SELECT w.id, w.name, w.workspace_mode, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id WHERE lower(m.email) = lower(?) ORDER BY w.workspace_mode, w.name").bind(email).all();
   const pendingInvitations = (workspace.membership_role === "owner" || workspace.membership_role === "admin") ? await db.prepare("SELECT id, email, role, status, invited_by, expires_at, created_at, accepted_at, revoked_at FROM workspace_invitations WHERE workspace_id = ? AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP ORDER BY created_at DESC").bind(workspace.id).all() : { results: [] };
@@ -238,7 +248,7 @@ export async function getWorkspaceEntitlements(workspaceId: string) {
   return entitlements;
 }
 
-export async function createProject(email: string, input: { name: string; repository: string; branch: string }) {
+export async function createProject(email: string, input: { name: string; repository: string; branch: string; sourceKind?: "manual" | "github"; repositoryVerified?: boolean }) {
   const snapshot = await getSaasSnapshot(email);
   if (String(snapshot.workspace.workspace_mode) === "sample") throw new Error("Create a clean customer workspace before connecting a real repository");
   requireRole(snapshot, ["owner", "admin", "member"]);
@@ -246,8 +256,10 @@ export async function createProject(email: string, input: { name: string; reposi
   if (snapshot.projects.length >= snapshot.entitlements.limits.projects) throw new Error(`${snapshot.entitlements.planName} plan project limit reached`);
   const id = `proj_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const db = await getD1();
-  await db.prepare("INSERT INTO projects (id, workspace_id, name, repository, branch, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(id, snapshot.workspace.id, input.name, input.repository, input.branch, "scanning", 0, 0).run();
-  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "project.created", targetType: "project", targetId: id, summary: `Connected ${input.repository}`, metadata: { branch: input.branch } });
+  const sourceKind = input.sourceKind === "github" ? "github" : "manual";
+  const repositoryVerified = sourceKind === "github" && input.repositoryVerified === true;
+  await db.prepare("INSERT INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, snapshot.workspace.id, input.name, input.repository, input.branch, sourceKind, repositoryVerified ? 1 : 0, "scanning", 0, 0).run();
+  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "project.created", targetType: "project", targetId: id, summary: `Connected ${input.repository}`, metadata: { branch: input.branch, sourceKind, repositoryVerified } });
   return db.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
 }
 
@@ -314,7 +326,7 @@ export async function getSimulationReport(email: string, runId: string) {
   const snapshot = await getSaasSnapshot(email);
   const workspace = snapshot.workspace as { id: string };
   const db = await getD1();
-  const run = await db.prepare("SELECT r.*, p.name AS project_name, p.repository, p.branch, w.workspace_mode FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspace.id).first<Record<string, unknown>>();
+  const run = await db.prepare("SELECT r.*, p.name AS project_name, p.repository, p.branch, p.source_kind, p.repository_verified, w.workspace_mode FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspace.id).first<Record<string, unknown>>();
   if (!run) throw new Error("Verification report not found");
   if (run.status !== "verified") throw new Error("Verification report is available after an identical replay passes");
   return run;

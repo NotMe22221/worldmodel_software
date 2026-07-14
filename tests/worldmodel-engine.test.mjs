@@ -98,6 +98,7 @@ test("verification report preserves immutable replay evidence and before-after m
     id: "run_test",
     project_name: "Checkout resilience",
     repository: "shopstream/demo-store",
+    repository_verified: 1,
     branch: "main",
     scenario: "Payment outage",
     scenario_fingerprint: "scn_payment_503_45s_v1",
@@ -115,7 +116,23 @@ test("verification report preserves immutable replay evidence and before-after m
   assert.match(report, /Scenario fingerprint: scn_payment_503_45s_v1/);
   assert.match(report, /Resilience: 31 → 94/);
   assert.match(report, /Journey success: 22% → 100%/);
-  assert.match(report, /tenant-owned simulation record/);
+  assert.match(report, /ownership-validated tenant simulation record/);
+});
+
+test("manual repository reports disclose unverified ownership", () => {
+  const report = formatVerificationReport({
+    id: "run_manual",
+    workspace_mode: "customer",
+    repository_verified: 0,
+    project_name: "Manual project",
+    repository: "typed/by-hand",
+    branch: "main",
+    scenario: "Database slowdown",
+  });
+  assert.match(report, /UNVERIFIED REPOSITORY/);
+  assert.match(report, /ownership has not been validated/);
+  assert.match(report, /before treating this as tenant-owned release evidence/);
+  assert.doesNotMatch(report, /ownership-validated tenant/);
 });
 
 test("sample verification reports cannot masquerade as customer evidence", () => {
@@ -138,10 +155,11 @@ test("sample verification reports cannot masquerade as customer evidence", () =>
 test("customer activation advances only from persisted product milestones", () => {
   const workspace = {
     workspaceMode: "customer",
-    projects: [{ created_at: "2026-07-14T01:00:00Z" }],
+    projects: [{ id: "project_verified", repository_verified: 1, created_at: "2026-07-14T01:00:00Z" }],
     runs: [
       {
         status: "verified",
+        project_id: "project_verified",
         created_at: "2026-07-14T02:00:00Z",
         verified_at: "2026-07-14T02:05:00Z",
       },
@@ -155,6 +173,14 @@ test("customer activation advances only from persisted product milestones", () =
     activation.steps.filter((step) => step.complete).map((step) => step.key),
     ["repository", "simulation", "verification"],
   );
+  const unverified = buildWorkspaceActivation({
+    ...workspace,
+    projects: workspace.projects.map((project) => ({
+      ...project,
+      repository_verified: 0,
+    })),
+  });
+  assert.equal(unverified.percent, 0);
   assert.equal(
     buildWorkspaceActivation({ ...workspace, workspaceMode: "sample" }),
     null,

@@ -20,6 +20,8 @@ export const projects = sqliteTable("projects", {
   name: text("name").notNull(),
   repository: text("repository").notNull(),
   branch: text("branch").notNull().default("main"),
+  sourceKind: text("source_kind").notNull().default("manual"),
+  repositoryVerified: integer("repository_verified", { mode: "boolean" }).notNull().default(false),
   status: text("status").notNull().default("ready"),
   resilienceScore: integer("resilience_score").notNull().default(0),
   serviceCount: integer("service_count").notNull().default(0),

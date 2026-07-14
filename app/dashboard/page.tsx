@@ -34,6 +34,8 @@ type Project = {
   name: string;
   repository: string;
   branch: string;
+  source_kind: "sample" | "manual" | "github";
+  repository_verified: number;
   status: string;
   resilience_score: number;
   service_count: number;
@@ -49,6 +51,8 @@ type Run = {
   error_rate: string;
   latency_ms: number;
   journey_success: number;
+  source_kind: "sample" | "manual" | "github";
+  repository_verified: number;
   created_at: string;
 };
 type Repair = {
@@ -81,6 +85,8 @@ type Repair = {
   project_name: string;
   repository: string;
   project_branch: string;
+  source_kind: "sample" | "manual" | "github";
+  repository_verified: number;
 };
 type Member = { email: string; role: string; created_at: string };
 type AvailableWorkspace = { id: string; name: string; role: string; workspace_mode: "sample" | "customer" };
@@ -1060,6 +1066,9 @@ export default function Dashboard() {
                     </div>
                     <h3>{project.name}</h3>
                     <p>⌘ {project.repository}</p>
+                    <span className={`repository-proof ${project.repository_verified ? "verified" : "unverified"}`}>
+                      {project.source_kind === "sample" ? "SAMPLE REPOSITORY" : project.repository_verified ? "GITHUB OWNERSHIP VERIFIED" : "OWNERSHIP UNVERIFIED"}
+                    </span>
                     <dl>
                       <div>
                         <dt>Resilience</dt>
@@ -1149,7 +1158,7 @@ export default function Dashboard() {
                       <ul>
                         <li>✓ Immutable replay matched</li>
                         <li>✓ Journey success {run.journey_success}%</li>
-                        <li>✓ {data.workspace.workspace_mode === "sample" ? "Illustrative sample evidence" : "Tenant-owned evidence"}</li>
+                        <li>✓ {data.workspace.workspace_mode === "sample" ? "Illustrative sample evidence" : run.repository_verified ? "GitHub ownership validated" : "Repository ownership unverified"}</li>
                       </ul>
                       <button
                         onClick={() =>
@@ -2292,8 +2301,9 @@ export default function Dashboard() {
             <span>NEW SOFTWARE TWIN</span>
             <h2 id="create-title">Connect a repository</h2>
             <p>
-              WorldModel starts with read-only access and asks before running
-              any code.
+              Manual entries remain ownership-unverified. For tenant-owned
+              evidence and draft pull requests, connect and import the
+              repository from the GitHub integration.
             </p>
             <form onSubmit={create}>
               <label>
@@ -2549,6 +2559,9 @@ function ProjectList({
             <small>
               ⌘ {project.repository} · {project.branch}
             </small>
+            <em className={`repository-proof ${project.repository_verified ? "verified" : "unverified"}`}>
+              {project.source_kind === "sample" ? "SAMPLE" : project.repository_verified ? "GITHUB VERIFIED" : "UNVERIFIED"}
+            </em>
           </div>
           <span className={`saas-status ${project.status}`}>
             {statusLabel(project.status)}
