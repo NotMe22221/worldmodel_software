@@ -23,6 +23,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Natural-language scenario interpretation with explicit safety limits
 - Six-step Playwright checkout journey fixture at `/journey-test`
 - Codex repair flow with a visible timeout, idempotency, queue, and regression-test patch
+- Runnable Codex-generated checkout regression test in the prepared repository
 - Immutable scenario replay with error rate, P95 latency, service health, resilience, and journey success
 - Executable checks for scanning, score improvement, replay fingerprints, and duplicate orders
 - Disposable virtual-lab harness that seeds data, starts five HTTP services, injects and recovers a fault, and destroys its temporary workspace
