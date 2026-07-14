@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import "./operator.css";
+import "./activation.css";
 
 type Totals = {
   workspaces: number;
@@ -14,6 +15,10 @@ type Totals = {
   open_cases: number;
   simulation_minutes: number;
   active_subscriptions: number;
+  activation_repository: number;
+  activation_simulation: number;
+  activation_verification: number;
+  activation_team: number;
 };
 type Workspace = {
   id: string;
@@ -198,6 +203,39 @@ export default function OperatorPage() {
             <strong>{data.totals.open_cases}</strong>
             <small>{data.totals.simulation_minutes} minutes consumed</small>
           </article>
+        </section>
+        <section className="operator-panel activation-funnel">
+          <header>
+            <div>
+              <span>TRIAL ACTIVATION</span>
+              <b>Customer workspace funnel</b>
+            </div>
+            <small>Derived from tenant events · sample workspaces excluded</small>
+          </header>
+          <div>
+            {[
+              ["Workspace created", data.totals.customer_workspaces],
+              ["Repository connected", data.totals.activation_repository],
+              ["First simulation", data.totals.activation_simulation],
+              ["Verified replay", data.totals.activation_verification],
+              ["Team adopted", data.totals.activation_team],
+            ].map(([label, count]) => {
+              const value = Number(count);
+              const rate = data.totals.customer_workspaces
+                ? Math.round((value / data.totals.customer_workspaces) * 100)
+                : 0;
+              return (
+                <article key={String(label)}>
+                  <span>
+                    <b>{label}</b>
+                    <small>{value} workspaces</small>
+                  </span>
+                  <div><i style={{ width: `${rate}%` }} /></div>
+                  <strong>{rate}%</strong>
+                </article>
+              );
+            })}
+          </div>
         </section>
         <section className="operator-panel tenant-panel">
           <header>

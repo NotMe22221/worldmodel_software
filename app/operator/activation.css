@@ -1,0 +1,42 @@
+.activation-funnel > div {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 18px;
+  padding: 18px;
+}
+
+.activation-funnel article {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.activation-funnel article > span {
+  display: flex;
+  flex-direction: column;
+}
+
+.activation-funnel article b { font-size: 8px; }
+.activation-funnel article small { color: #718078; font-size: 6px; margin-top: 4px; }
+.activation-funnel article > div {
+  grid-column: 1 / -1;
+  height: 4px;
+  background: #26332d;
+  border-radius: 4px;
+}
+.activation-funnel article i {
+  display: block;
+  height: 100%;
+  background: #69f0b0;
+  border-radius: 4px;
+}
+.activation-funnel article strong { color: #69f0b0; font-size: 9px; }
+
+@media (max-width: 800px) {
+  .activation-funnel > div { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 520px) {
+  .activation-funnel > div { grid-template-columns: 1fr; }
+}

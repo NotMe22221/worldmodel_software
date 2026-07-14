@@ -1,5 +1,6 @@
 import { recordAudit } from "./audit";
 import { resolveEntitlements, usagePeriod } from "../worldmodel/entitlements.mjs";
+import { buildWorkspaceActivation } from "../worldmodel/activation.mjs";
 
 async function getD1() {
   const { env } = await import("cloudflare:workers");
@@ -171,7 +172,12 @@ export async function getSaasSnapshot(email: string) {
   const deletionRequests = workspace.membership_role === "owner" ? await db.prepare("SELECT id, scope, status, reason, execute_after, created_at, canceled_at, completed_at FROM data_deletion_requests WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 10").bind(workspace.id).all() : { results: [] };
   const apiKeys = auditAccess ? await db.prepare("SELECT id, name, key_prefix, scopes_json, status, created_by, last_used_at, expires_at, created_at, revoked_at FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 20").bind(workspace.id).all() : { results: [] };
   const apiUsage = auditAccess ? await db.prepare("SELECT COALESCE(SUM(b.request_count), 0) AS requests_today FROM api_rate_buckets b JOIN api_keys k ON k.id = b.api_key_id WHERE k.workspace_id = ? AND b.bucket_start >= date('now')").bind(workspace.id).first() : { requests_today: 0 };
-  return { workspace, availableWorkspaces: availableWorkspaces.results, projects: projects.results, runs: runs.results, repairs: repairs.results, members: members.results, pendingInvitations: pendingInvitations.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, entitlements, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results, apiKeys: apiKeys.results, apiUsage };
+  const projectRows = projects.results as Array<Record<string, unknown>>;
+  const runRows = runs.results as Array<Record<string, unknown>>;
+  const memberRows = members.results as Array<Record<string, unknown>>;
+  const invitationRows = pendingInvitations.results as Array<Record<string, unknown>>;
+  const activation = buildWorkspaceActivation({ workspaceMode: String(workspace.workspace_mode), projects: projectRows, runs: runRows, members: memberRows, invitations: invitationRows });
+  return { workspace, availableWorkspaces: availableWorkspaces.results, projects: projectRows, runs: runRows, repairs: repairs.results, members: memberRows, pendingInvitations: invitationRows, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, entitlements, activation, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results, apiKeys: apiKeys.results, apiUsage };
 }
 
 export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>, allowed: string[]) {

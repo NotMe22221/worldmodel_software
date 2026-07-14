@@ -150,6 +150,17 @@ type Readiness = {
   score: number;
   ready: boolean;
 };
+type Activation = {
+  completed: number;
+  total: number;
+  percent: number;
+  steps: Array<{
+    key: "repository" | "simulation" | "verification" | "team";
+    label: string;
+    complete: boolean;
+    completedAt: string | null;
+  }>;
+};
 type DeletionRequest = {
   id: string;
   scope: string;
@@ -203,6 +214,7 @@ type Snapshot = {
   githubRepositories: GithubRepository[];
   subscription: Subscription;
   entitlements: Entitlements;
+  activation: Activation | null;
   auditAccess: boolean;
   auditLogs: AuditLog[];
   supportCases: SupportCase[];
@@ -965,6 +977,39 @@ export default function Dashboard() {
                   />
                   <RunTable runs={data.runs.slice(0, 3)} />
                 </section>
+                {data.activation ? (
+                  <section className="saas-card activation-card">
+                    <header>
+                      <div>
+                        <span>GET STARTED</span>
+                        <b>Workspace activation</b>
+                      </div>
+                      <strong>{data.activation.percent}%</strong>
+                    </header>
+                    <div className="activation-progress">
+                      <i style={{ width: `${data.activation.percent}%` }} />
+                    </div>
+                    <ol>
+                      {data.activation.steps.map((step) => (
+                        <li className={step.complete ? "complete" : ""} key={step.key}>
+                          <i>{step.complete ? "✓" : data.activation!.steps.indexOf(step) + 1}</i>
+                          <span>
+                            <b>{step.label}</b>
+                            <small>{step.complete ? `Completed${step.completedAt ? ` · ${dateLabel(step.completedAt)}` : ""}` : "Required for an activated workspace"}</small>
+                          </span>
+                          {!step.complete && (
+                            <button onClick={() => {
+                              if (step.key === "repository") setTab("projects");
+                              if (step.key === "simulation" || step.key === "verification") location.href = "/";
+                              if (step.key === "team") setTab("team");
+                            }}>Start →</button>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                    <p>{data.activation.completed} of {data.activation.total} activation milestones complete.</p>
+                  </section>
+                ) : (
                 <section className="saas-card readiness-card">
                   <span>LAUNCH READINESS</span>
                   <div
@@ -991,6 +1036,7 @@ export default function Dashboard() {
                     Review launch gate →
                   </button>
                 </section>
+                )}
               </div>
             </>
           )}

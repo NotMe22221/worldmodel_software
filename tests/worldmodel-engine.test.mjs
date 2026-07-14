@@ -10,6 +10,7 @@ import {
   verifyReplay,
 } from "../worldmodel/simulation-engine.mjs";
 import { formatVerificationReport } from "../worldmodel/verification-report.mjs";
+import { buildWorkspaceActivation } from "../worldmodel/activation.mjs";
 import { createHmac } from "node:crypto";
 import {
   createStripePortalWithKey,
@@ -132,6 +133,32 @@ test("sample verification reports cannot masquerade as customer evidence", () =>
   assert.match(report, /illustrative and is not evidence from a customer repository/);
   assert.match(report, /Create a clean customer workspace/);
   assert.doesNotMatch(report, /tenant-owned simulation record/);
+});
+
+test("customer activation advances only from persisted product milestones", () => {
+  const workspace = {
+    workspaceMode: "customer",
+    projects: [{ created_at: "2026-07-14T01:00:00Z" }],
+    runs: [
+      {
+        status: "verified",
+        created_at: "2026-07-14T02:00:00Z",
+        verified_at: "2026-07-14T02:05:00Z",
+      },
+    ],
+    members: [{ created_at: "2026-07-14T00:00:00Z" }],
+    invitations: [],
+  };
+  const activation = buildWorkspaceActivation(workspace);
+  assert.equal(activation.percent, 75);
+  assert.deepEqual(
+    activation.steps.filter((step) => step.complete).map((step) => step.key),
+    ["repository", "simulation", "verification"],
+  );
+  assert.equal(
+    buildWorkspaceActivation({ ...workspace, workspaceMode: "sample" }),
+    null,
+  );
 });
 
 test("Stripe webhook verification accepts only a fresh matching raw-body signature", async () => {
