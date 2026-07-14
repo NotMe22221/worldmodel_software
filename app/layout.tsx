@@ -13,9 +13,9 @@ export const metadata: Metadata = {
   openGraph: {
     title: "WorldModel for Software",
     description: "Simulate failure. Verify the fix.",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "WorldModel for Software system failure and repair graph" }],
+    images: [{ url: "/og-v2.png", width: 1200, height: 630, alt: "WorldModel for Software failure and verified repair transformation" }],
   },
-  twitter: { card: "summary_large_image", title: "WorldModel for Software", description: "Simulate failure. Verify the fix.", images: ["/og.png"] },
+  twitter: { card: "summary_large_image", title: "WorldModel for Software", description: "Break your software before your users do.", images: ["/og-v2.png"] },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

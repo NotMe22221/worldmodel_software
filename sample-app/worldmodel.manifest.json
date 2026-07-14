@@ -1,0 +1,18 @@
+{
+  "repository": "shopstream/demo-store",
+  "language": "TypeScript",
+  "packageManager": "npm",
+  "buildCommand": "npm run build",
+  "startCommand": "npm start",
+  "seedCommand": "npm run db:seed",
+  "healthCheck": "/api/health",
+  "components": [
+    { "id": "storefront", "name": "Storefront", "type": "frontend", "path": "apps/web", "runtime": "Next.js", "startCommand": "npm run dev:web", "healthCheck": "/", "dependencies": ["gateway"], "evidence": ["apps/web/package.json", "apps/web/app/checkout/page.tsx"] },
+    { "id": "gateway", "name": "API Gateway", "type": "backend", "path": "apps/api", "runtime": "Fastify", "startCommand": "npm run dev:api", "healthCheck": "/api/health", "dependencies": ["checkout", "orders"], "evidence": ["apps/api/package.json", "apps/api/src/server.ts"] },
+    { "id": "checkout", "name": "Checkout", "type": "service", "path": "services/checkout", "runtime": "Node.js", "startCommand": "npm run dev:checkout", "healthCheck": "/health", "dependencies": ["payment-mock"], "evidence": ["services/checkout/src/index.ts", "services/checkout/src/payment.ts"] },
+    { "id": "orders", "name": "Orders", "type": "service", "path": "services/orders", "runtime": "Node.js", "startCommand": "npm run dev:orders", "healthCheck": "/health", "dependencies": ["orders-db", "email-worker"], "evidence": ["services/orders/src/create.ts", "services/orders/src/idempotency.ts"] },
+    { "id": "payment-mock", "name": "Stripe API", "type": "external", "path": "mocks/payment", "runtime": "WireMock", "startCommand": "docker compose up payment-mock", "healthCheck": "/health", "dependencies": [], "evidence": ["infra/docker-compose.yml", "mocks/payment/mappings.json"] },
+    { "id": "orders-db", "name": "Orders DB", "type": "database", "path": "infra/postgres", "runtime": "PostgreSQL 16", "startCommand": "docker compose up postgres", "healthCheck": "pg_isready", "dependencies": [], "evidence": ["infra/docker-compose.yml", "services/orders/src/db.ts"] },
+    { "id": "email-worker", "name": "Email", "type": "worker", "path": "workers/email", "runtime": "Node.js", "startCommand": "npm run dev:worker", "healthCheck": "/health", "dependencies": [], "evidence": ["workers/email/src/consumer.ts", "infra/queues.ts"] }
+  ]
+}

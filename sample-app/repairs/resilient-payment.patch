@@ -1,0 +1,26 @@
+diff --git a/services/checkout/src/payment.ts b/services/checkout/src/payment.ts
+index 94b8d4a..c874f11 100644
+--- a/services/checkout/src/payment.ts
++++ b/services/checkout/src/payment.ts
+@@ -1,8 +1,20 @@
+ export async function chargePayment(orderId: string, amount: number) {
++  const controller = new AbortController();
++  const timeout = setTimeout(() => controller.abort(), 1500);
+   const response = await fetch("http://payment-mock:8080/charges", {
+     method: "POST",
+-    headers: { "content-type": "application/json" },
++    headers: {
++      "content-type": "application/json",
++      "idempotency-key": orderId,
++    },
+     body: JSON.stringify({ orderId, amount }),
++    signal: controller.signal,
+   });
+-  if (!response.ok) throw new Error(`payment failed: ${response.status}`);
++  clearTimeout(timeout);
++  if (!response.ok) {
++    await paymentRetryQueue.enqueue({ orderId, amount });
++    return { status: "payment_pending", orderId };
++  }
+   return response.json();
+ }

@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "./worldmodel-expansion.css";
+@import "./worldmodel-polish.css";
 
 :root { --ink:#dfe7e3; --muted:#788680; --line:#24302d; --panel:#0f1614; --panel2:#121b18; --green:#69f0b0; --green2:#24c77e; --red:#ff6b5e; --amber:#e9b949; --bg:#090e0d; }
 * { box-sizing:border-box; }
