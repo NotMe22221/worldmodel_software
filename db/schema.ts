@@ -35,6 +35,16 @@ export const simulationRuns = sqliteTable("simulation_runs", {
   latencyMs: integer("latency_ms").notNull(),
   journeySuccess: integer("journey_success").notNull(),
   durationSeconds: integer("duration_seconds").notNull(),
+  scenarioKey: text("scenario_key"),
+  scenarioFingerprint: text("scenario_fingerprint"),
+  seed: text("seed"),
+  beforeErrorRate: text("before_error_rate"),
+  afterErrorRate: text("after_error_rate"),
+  beforeLatencyMs: integer("before_latency_ms"),
+  afterLatencyMs: integer("after_latency_ms"),
+  beforeJourneySuccess: integer("before_journey_success"),
+  afterJourneySuccess: integer("after_journey_success"),
+  verifiedAt: text("verified_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type ScenarioKey = "traffic" | "database" | "payments";
 type RunPhase = "ready" | "running" | "failed" | "repairing" | "repaired" | "verified";
@@ -62,6 +62,8 @@ export default function Home() {
   const [showModelEditor, setShowModelEditor] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [projectName, setProjectName] = useState("Checkout resilience");
+  const [recordStatus, setRecordStatus] = useState("Workspace record ready");
+  const activeRunId = useRef<string | null>(null);
   const [nodeNames, setNodeNames] = useState<Record<string, string>>(() => Object.fromEntries(nodes.map((node) => [node.id, node.label])));
   const data = scenarios[scenario];
 
@@ -75,7 +77,22 @@ export default function Home() {
     return () => { window.clearInterval(ticker); window.clearTimeout(done); };
   }, [phase]);
 
-  const runScenario = () => { setElapsed(0); setPhase("running"); };
+  const persistRun = async () => {
+    if (activeRunId.current) return activeRunId.current;
+    setRecordStatus("Saving immutable run…");
+    const response = await fetch("/api/saas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "create-run", scenario }) });
+    const payload = await response.json() as { run?: { id?: string }; error?: string };
+    if (!response.ok || !payload.run?.id) throw new Error(payload.error || "Unable to save this run");
+    activeRunId.current = payload.run.id;
+    setRecordStatus("Run saved to workspace");
+    return payload.run.id;
+  };
+  const runScenario = () => {
+    activeRunId.current = null;
+    setElapsed(0);
+    setPhase("running");
+    void persistRun().catch((error) => setRecordStatus(error instanceof Error ? error.message : "Run record unavailable"));
+  };
   const startRepair = () => {
     setPhase("repairing");
     window.setTimeout(() => setPhase("repaired"), 1400);
@@ -83,7 +100,16 @@ export default function Home() {
   const verify = () => {
     setElapsed(0);
     setPhase("running");
-    window.setTimeout(() => setPhase("verified"), 1250);
+    window.setTimeout(() => {
+      setPhase("verified");
+      void persistRun().then(async (runId) => {
+        setRecordStatus("Verifying workspace evidence…");
+        const response = await fetch("/api/saas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "verify-run", runId }) });
+        const payload = await response.json() as { error?: string };
+        if (!response.ok) throw new Error(payload.error || "Unable to verify this run");
+        setRecordStatus("Verified evidence saved");
+      }).catch((error) => setRecordStatus(error instanceof Error ? error.message : "Verification record unavailable"));
+    }, 1250);
   };
 
   const selected = useMemo(() => {
@@ -143,8 +169,8 @@ export default function Home() {
           <h1>Checkout resilience <span>v24</span></h1>
         </div>
         <div className="command-actions">
-          <span className="environment"><i /> Virtual environment ready</span>
-          <button className="secondary" onClick={() => { setPhase("ready"); setScenario("payments"); }}>Reset demo</button>
+          <span className="environment"><i /> {recordStatus}</span>
+          <button className="secondary" onClick={() => { activeRunId.current = null; setRecordStatus("Workspace record ready"); setPhase("ready"); setScenario("payments"); }}>Reset demo</button>
           <button className="primary" data-testid="run-simulation" onClick={runScenario} disabled={phase === "running" || phase === "repairing"}>{phase === "running" ? "Running…" : "Run simulation"}<span>▶</span></button>
         </div>
       </section>
@@ -162,7 +188,7 @@ export default function Home() {
           <div className="panel-heading"><span>SCENARIOS</span><button aria-label="Add scenario" onClick={()=>setShowScenarioBuilder(true)}>＋</button></div>
           <div className="scenario-list">
             {(Object.keys(scenarios) as ScenarioKey[]).map((key) => (
-              <button key={key} className={scenario === key ? "selected" : ""} onClick={() => { setScenario(key); setPhase("ready"); }}>
+              <button key={key} className={scenario === key ? "selected" : ""} onClick={() => { activeRunId.current = null; setRecordStatus("Workspace record ready"); setScenario(key); setPhase("ready"); }}>
                 <i className={`scenario-icon ${key}`}>{key === "traffic" ? "↗" : key === "database" ? "▤" : "⚡"}</i>
                 <span><b>{scenarios[key].label}</b><small>{scenarios[key].detail}</small></span>
                 {scenario === key && <em>READY</em>}
