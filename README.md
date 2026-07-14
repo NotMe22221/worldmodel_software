@@ -25,6 +25,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Codex repair flow with a visible timeout, idempotency, queue, and regression-test patch
 - Immutable scenario replay with error rate, P95 latency, service health, resilience, and journey success
 - Executable checks for scanning, score improvement, replay fingerprints, and duplicate orders
+- Disposable virtual-lab harness that seeds data, starts five HTTP services, injects and recovers a fault, and destroys its temporary workspace
 - Downloadable verification report with residual risks and draft-PR artifact
 - Responsive single-route demo designed for a sub-three-minute presentation
 
