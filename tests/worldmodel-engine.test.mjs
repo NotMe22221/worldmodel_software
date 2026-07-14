@@ -99,6 +99,7 @@ test("verification report preserves immutable replay evidence and before-after m
     project_name: "Checkout resilience",
     repository: "shopstream/demo-store",
     repository_verified: 1,
+    evidence_kind: "observed",
     branch: "main",
     scenario: "Payment outage",
     scenario_fingerprint: "scn_payment_503_45s_v1",
@@ -114,6 +115,8 @@ test("verification report preserves immutable replay evidence and before-after m
     after_journey_success: 100,
   });
   assert.match(report, /Scenario fingerprint: scn_payment_503_45s_v1/);
+  assert.match(report, /WORLDMODEL VERIFICATION REPORT/);
+  assert.match(report, /OBSERVED EVIDENCE/);
   assert.match(report, /Resilience: 31 → 94/);
   assert.match(report, /Journey success: 22% → 100%/);
   assert.match(report, /ownership-validated tenant simulation record/);
@@ -124,6 +127,7 @@ test("manual repository reports disclose unverified ownership", () => {
     id: "run_manual",
     workspace_mode: "customer",
     repository_verified: 0,
+    evidence_kind: "modeled",
     project_name: "Manual project",
     repository: "typed/by-hand",
     branch: "main",
@@ -131,7 +135,8 @@ test("manual repository reports disclose unverified ownership", () => {
   });
   assert.match(report, /UNVERIFIED REPOSITORY/);
   assert.match(report, /ownership has not been validated/);
-  assert.match(report, /before treating this as tenant-owned release evidence/);
+  assert.match(report, /MODELED EVIDENCE/);
+  assert.match(report, /Use this result for planning only/);
   assert.doesNotMatch(report, /ownership-validated tenant/);
 });
 
@@ -420,6 +425,7 @@ test("GitHub draft handoff contract validates repository paths and preserves app
     scenario: {
       name: "Payment outage",
       fingerprint: "scn_payment_503_45s_v1",
+      evidenceKind: "modeled",
       beforeScore: 31,
       afterScore: 94,
       verifiedAt: "2026-07-13T23:42:00Z",
@@ -431,6 +437,8 @@ test("GitHub draft handoff contract validates repository paths and preserves app
     },
   });
   assert.match(body, /intentionally a draft/);
+  assert.match(body, /MODELED EVIDENCE/);
+  assert.match(body, /were not observed/);
   assert.match(body, /31 → 94/);
   assert.match(body, /owner@example.com/);
   assert.match(body, /Regional failover remains unverified/);

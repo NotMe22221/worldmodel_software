@@ -53,6 +53,7 @@ type Run = {
   journey_success: number;
   source_kind: "sample" | "manual" | "github";
   repository_verified: number;
+  evidence_kind: "sample_fixture" | "modeled" | "observed";
   created_at: string;
 };
 type Repair = {
@@ -87,6 +88,7 @@ type Repair = {
   project_branch: string;
   source_kind: "sample" | "manual" | "github";
   repository_verified: number;
+  evidence_kind: "sample_fixture" | "modeled" | "observed";
 };
 type Member = { email: string; role: string; created_at: string };
 type AvailableWorkspace = { id: string; name: string; role: string; workspace_mode: "sample" | "customer" };
@@ -1144,7 +1146,7 @@ export default function Dashboard() {
                   .filter((run) => run.status === "verified")
                   .map((run) => (
                     <article key={run.id}>
-                      <span>{data.workspace.workspace_mode === "sample" ? "SAMPLE VERIFIED REPORT" : "VERIFIED REPORT"}</span>
+                      <span>{data.workspace.workspace_mode === "sample" ? "SAMPLE VERIFIED REPORT" : run.evidence_kind === "observed" ? "OBSERVED VERIFIED REPORT" : "MODELED REPLAY REPORT"}</span>
                       <h3>{run.scenario}</h3>
                       <p>
                         {run.project_name} · {dateLabel(run.created_at)}
@@ -1156,7 +1158,7 @@ export default function Dashboard() {
                         <b>+{(run.after_score || 0) - run.before_score}</b>
                       </div>
                       <ul>
-                        <li>✓ Immutable replay matched</li>
+                        <li>{run.evidence_kind === "modeled" ? "~ Deterministic replay modeled" : "✓ Immutable replay matched"}</li>
                         <li>✓ Journey success {run.journey_success}%</li>
                         <li>✓ {data.workspace.workspace_mode === "sample" ? "Illustrative sample evidence" : run.repository_verified ? "GitHub ownership validated" : "Repository ownership unverified"}</li>
                       </ul>
@@ -1194,7 +1196,7 @@ export default function Dashboard() {
                     <header>
                       <div>
                         <span>
-                          {repair.project_name} · {repair.scenario}
+                          {repair.project_name} · {repair.scenario} · {repair.evidence_kind === "observed" ? "OBSERVED" : repair.evidence_kind === "sample_fixture" ? "SAMPLE" : "MODELED"}
                         </span>
                         <b>{repair.title}</b>
                       </div>
@@ -2681,7 +2683,7 @@ function RunTable({ runs }: { runs: Run[] }) {
             </i>
             <span>
               <b>{run.scenario}</b>
-              <small>{run.project_name}</small>
+              <small>{run.project_name} · {run.evidence_kind === "observed" ? "observed" : run.evidence_kind === "sample_fixture" ? "sample" : "modeled"}</small>
             </span>
           </div>
           <span className={`saas-status ${run.status}`}>

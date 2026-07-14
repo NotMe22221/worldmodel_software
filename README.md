@@ -32,6 +32,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Explicit sample/customer workspace modes with one-click idempotent clean-workspace provisioning, isolated repositories and evidence, sample-labeled exports, and sample draft-PR publication denial
 - Persisted customer activation milestones for repository connection, first simulation, verified replay, and team adoption, plus a sample-excluding operator conversion funnel
 - Durable repository provenance that distinguishes samples, manual unverified entries, and installation-validated GitHub imports; ownership claims, activation, verification reports, and draft-PR handoff honor that boundary
+- Simulation evidence provenance that labels prepared fixtures, deterministic modeled replays, and observed virtual-environment runs; reports and draft PRs carry the same disclosure
 - Durable scenario fingerprints, replay evidence, metered simulation minutes, and tenant-isolated report downloads
 - GitHub App install/OAuth ownership validation, installation-scoped repository sync, and repository import
 - Stripe-hosted subscription checkout with signed, idempotent entitlement webhooks

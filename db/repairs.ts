@@ -336,6 +336,7 @@ export async function getRepairPacket(email: string, proposalId: string) {
       runId: repair.run_id,
       name: repair.scenario,
       fingerprint: repair.scenario_fingerprint,
+      evidenceKind: repair.evidence_kind,
       verifiedAt: repair.verified_at,
       beforeScore: repair.before_score,
       afterScore: repair.after_score,

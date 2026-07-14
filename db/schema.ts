@@ -50,6 +50,7 @@ export const simulationRuns = sqliteTable("simulation_runs", {
   beforeJourneySuccess: integer("before_journey_success"),
   afterJourneySuccess: integer("after_journey_success"),
   verifiedAt: text("verified_at"),
+  evidenceKind: text("evidence_kind").notNull().default("modeled"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
