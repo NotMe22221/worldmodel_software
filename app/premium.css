@@ -709,8 +709,8 @@ body .decision-report footer button { min-height: 38px; padding-inline: 14px; bo
   .warm-hero-actions { flex-direction: row; align-items: center; }
   .warm-hero-actions a { width: auto; }
   .warm-proof-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
-  .warm-system-map { width: min(620px, 145vw); height: 440px; margin: 8px 0 -28px -15vw; transform: scale(.78); transform-origin: top center; }
-  .warm-proof-card { right: 8%; }
+  .warm-system-map { display: none; }
+  .warm-step-grid { margin-top: 38px; }
   .warm-hero-copy h1 { font-size: clamp(46px, 14vw, 62px); }
   .warm-step-grid { width: calc(100% - 28px); }
   body .saas-shell { display: block; }
@@ -779,7 +779,6 @@ body .decision-report footer button { min-height: 38px; padding-inline: 14px; bo
   .warm-hero-actions { align-items: stretch; flex-direction: column; }
   .warm-hero-actions a { width: 100%; }
   .warm-proof-list { grid-template-columns: 1fr; }
-  .warm-system-map { display: none; }
   .warm-step-grid { margin-top: 30px; }
   body .saas-kpis { grid-template-columns: 1fr !important; }
   body .project-metrics { grid-template-columns: 1fr; }
