@@ -36,19 +36,22 @@ export default function ProviderSettingsPage() {
     const formElement = event.currentTarget;
     setWorking(true);
     setError("");
-    const response = await fetch("/api/provider-settings", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(Object.fromEntries(new FormData(formElement))),
-    });
-    const result = await response.json() as { error?: string; configuration?: Configuration };
-    if (!response.ok) setError(result.error || "Unable to save provider settings");
-    else {
+    try {
+      const response = await fetch("/api/provider-settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(Object.fromEntries(new FormData(formElement))),
+      });
+      const result = await response.json().catch(() => ({})) as { error?: string; configuration?: Configuration };
+      if (!response.ok) throw new Error(result.error || "Unable to save provider settings");
       setConfiguration(result.configuration || {});
       setStatus("Credentials encrypted. Customers can now connect GitHub with one click.");
       formElement.reset();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to save provider settings");
+    } finally {
+      setWorking(false);
     }
-    setWorking(false);
   }
 
   return <main className="auth-shell">
@@ -64,7 +67,7 @@ export default function ProviderSettingsPage() {
         <code>Composio Connect Link → GitHub OAuth → WorldModel callback</code>
         <small>Create a Composio-managed GitHub auth config and use a least-privilege project API key. The callback is generated from the current deployment origin.</small>
       </div>
-      <form onSubmit={submit}>
+      <form onSubmit={submit} aria-busy={working}>
         <label>Composio project API key<input name="composioApiKey" type="password" autoComplete="off" placeholder={configuration.composio?.configured ? "Configured — enter only to rotate" : "ak_…"} required={!configuration.composio?.configured} /></label>
         <label>GitHub auth config ID<input name="composioGithubAuthConfigId" placeholder={configuration.composio?.configured ? "Configured — enter only to change" : "ac_…"} required={!configuration.composio?.configured} /></label>
         <label>OpenAI API key (optional)<input name="openaiApiKey" type="password" autoComplete="off" /></label>
@@ -77,7 +80,7 @@ export default function ProviderSettingsPage() {
           <label>OAuth Client secret<input name="githubClientSecret" type="password" autoComplete="off" /></label>
           <label>GitHub App private key<textarea name="githubPrivateKey" rows={6} placeholder="-----BEGIN PRIVATE KEY-----" /></label>
         </details>
-        <button disabled={working}>{working ? "Encrypting and saving…" : "Enable Composio GitHub →"}</button>
+        <button type="submit" disabled={working}>{working ? "Encrypting and saving…" : "Enable Composio GitHub →"}</button>
       </form>
     </section>
   </main>;
