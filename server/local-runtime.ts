@@ -43,7 +43,10 @@ export async function localRuntimeEnv() {
   if (global.__worldmodelLocalEnv) return global.__worldmodelLocalEnv;
   // Keep SQLite WAL/SHM files outside the source tree. Turbopack watches the
   // project recursively on Windows and can otherwise panic on SQLite's locks.
-  const state = process.env.WORLDMODEL_LOCAL_STATE_DIR || path.join(tmpdir(), "worldmodel-software-local");
+  const defaultState = process.env.NODE_TEST_CONTEXT
+    ? `worldmodel-software-test-${process.pid}`
+    : "worldmodel-software-local";
+  const state = process.env.WORLDMODEL_LOCAL_STATE_DIR || path.join(tmpdir(), defaultState);
   await mkdir(state, { recursive: true });
   global.__worldmodelLocalEnv = {
     ...process.env,

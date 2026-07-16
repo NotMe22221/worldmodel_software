@@ -27,11 +27,11 @@ export default function Home() {
 
     <section className="warm-hero">
       <div className="warm-hero-copy">
-        <span className="warm-kicker">RELIABILITY ENGINEERING, REIMAGINED</span>
-        <h1>Break your<br />software <em>before</em><br />your users do.</h1>
-        <p>Simulate real production failures across your stack and let AI agents propose and verify repairs—so you ship with confidence.</p>
+        <span className="warm-kicker">VERIFIED RELIABILITY ENGINEERING</span>
+        <h1>Prove your<br />software is <em>ready</em><br />for what’s next.</h1>
+        <p>Model your production system, rehearse high-impact failures, and verify every repair against the same evidence—before you ship.</p>
         <div className="warm-hero-actions"><Link className="warm-button warm-button-large" href="/signup">Start free <Arrow /></Link><Link className="warm-button-quiet" href="/trust"><span aria-hidden="true">▣</span> Read docs</Link></div>
-        <ul className="warm-proof-list" aria-label="Product assurances"><li><i>✓</i>No credit card</li><li><i>♙</i>Human-approved writes</li><li><i>⌘</i>Built for dev teams</li></ul>
+        <ul className="warm-proof-list" aria-label="Product assurances"><li><i>✓</i>Private by default</li><li><i>♙</i>Human-approved changes</li><li><i>⌘</i>Evidence-backed results</li></ul>
       </div>
 
       <div className="warm-system-map" aria-label="Illustration of a software system recovering from a simulated failure">
@@ -91,7 +91,7 @@ export default function Home() {
       <div className="security-cards"><article><i>⌘</i><span><b>Real authentication</b><small>Revocable HTTP-only sessions and protected application routes.</small></span></article><article><i>♙</i><span><b>Human approvals</b><small>Commands, campaigns, and repository writes are separately authorized.</small></span></article><article><i>◇</i><span><b>Tenant isolation</b><small>Projects, events, artifacts, reports, and quotas stay workspace-scoped.</small></span></article><article><i>✓</i><span><b>Evidence or nothing</b><small>No runner attestation means no result is labeled observed.</small></span></article></div>
     </section>
 
-    <section className="warm-final-cta"><div className="map-wash wash-lilac" /><div className="map-wash wash-yellow" /><span>YOUR SOFTWARE HAS A STORY. TEST THE ENDING.</span><h2>Find the failure before<br />your customers do.</h2><p>Start with an empty, private workspace. Connect only the repositories you choose.</p><div><Link className="warm-button warm-button-large" href="/signup">Start free <Arrow /></Link><Link className="warm-button-quiet" href="/support">Talk to us</Link></div></section>
+    <section className="warm-final-cta"><div className="map-wash wash-lilac" /><div className="map-wash wash-yellow" /><span>RELEASE DECISIONS, BACKED BY EVIDENCE</span><h2>Know what will happen<br />before production does.</h2><p>Start in a private workspace. Connect only the repositories and environments your team approves.</p><div><Link className="warm-button warm-button-large" href="/signup">Start free <Arrow /></Link><Link className="warm-button-quiet" href="/support">Talk to us</Link></div></section>
 
     <footer className="warm-footer"><div><Link className="warm-brand" href="/"><Mark /><strong>WorldModel</strong><span>for Software</span></Link><p>Evidence-backed reliability engineering for modern software teams.</p></div><nav><div><b>Product</b><a href="#platform">Platform</a><a href="#workflow">How it works</a><Link href="/security">Security</Link></div><div><b>Company</b><Link href="/trust">Trust center</Link><Link href="/support">Support</Link></div><div><b>Legal</b><Link href="/privacy">Privacy</Link><Link href="/terms">Terms</Link></div></nav><small>© 2026 WorldModel. All rights reserved.</small></footer>
   </main>;
