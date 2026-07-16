@@ -2,7 +2,7 @@ import { exportWorkspaceData } from "@/db/operations";
 import { requestIdentity } from "@/server/request-identity";
 
 export async function GET(request: Request) {
-  const email = requestIdentity(request);
+  const email = await requestIdentity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
     const payload = await exportWorkspaceData(email);

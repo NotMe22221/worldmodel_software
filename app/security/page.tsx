@@ -76,18 +76,18 @@ export default function SecurityPage() {
       <PolicySection title="Provider integrations">
         <ul>
           <li>
-            GitHub installations use one-time, expiring connection state and are
-            accepted only after the authorizing GitHub user can access that
-            installation.
+            GitHub connections use a hosted Composio OAuth link plus one-time,
+            expiring tenant-bound state. The callback accepts only the expected
+            GitHub auth configuration and WorldModel user identity.
           </li>
           <li>
-            Repository operations use installation-scoped tokens. Long-lived
-            GitHub user access tokens are not stored.
+            Repository operations use the scoped Composio connected account.
+            WorldModel does not ask for or store long-lived GitHub user tokens.
           </li>
           <li>
-            Draft publication requires an approved repair plus explicit Contents
-            and Pull requests write permissions; it commits only the tenant-owned
-            evidence packet and is retried idempotently.
+            Draft publication requires an approved repair and a second explicit
+            action; it writes only the bounded tenant-owned evidence packet and
+            never merges the pull request.
           </li>
           <li>
             Stripe collects payment details on Stripe-hosted Checkout.

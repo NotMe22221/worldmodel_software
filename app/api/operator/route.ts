@@ -16,7 +16,7 @@ function failure(error: unknown) {
 }
 
 export async function GET(request: Request) {
-  const email = requestIdentity(request);
+  const email = await requestIdentity(request);
   if (!email)
     return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
@@ -29,7 +29,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const email = requestIdentity(request);
+  const email = await requestIdentity(request);
   if (!email)
     return Response.json({ error: "Authentication required" }, { status: 401 });
   let payload: {

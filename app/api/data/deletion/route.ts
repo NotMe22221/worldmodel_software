@@ -8,7 +8,7 @@ function failure(error: unknown) {
 }
 
 export async function POST(request: Request) {
-  const email = requestIdentity(request);
+  const email = await requestIdentity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   let payload: { action?: string; reason?: string; requestId?: string };
   try { payload = await request.json(); }

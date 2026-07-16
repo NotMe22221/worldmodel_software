@@ -3,7 +3,7 @@ import { requestIdentity } from "@/server/request-identity";
 import { generateRunnerWorkflow } from "@/worldmodel/runner-workflow.mjs";
 
 export async function GET(request: Request) {
-  const email = requestIdentity(request);
+  const email = await requestIdentity(request);
   if (!email)
     return Response.json({ error: "Authentication required" }, { status: 401 });
   const url = new URL(request.url);

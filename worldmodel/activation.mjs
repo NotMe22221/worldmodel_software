@@ -1,3 +1,12 @@
+/**
+ * @param {{
+ *   workspaceMode: string,
+ *   projects?: Array<{id?: unknown, repository_verified?: unknown, created_at?: unknown}>,
+ *   runs?: Array<{project_id?: unknown, status?: unknown, evidence_kind?: unknown, created_at?: unknown, verified_at?: unknown}>,
+ *   members?: Array<{created_at?: unknown}>,
+ *   invitations?: Array<{created_at?: unknown}>
+ * }} input
+ */
 export function buildWorkspaceActivation({
   workspaceMode,
   projects = [],

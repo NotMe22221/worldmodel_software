@@ -1,6 +1,7 @@
 import { recordAudit } from "./audit";
 import { ensureSaasSchema, getSaasSnapshot, getWorkspaceEntitlements, requireRole, requireWriteEntitlement } from "./saas";
 import { digestApiToken, generateApiTokenMaterial } from "../worldmodel/api-key-security.mjs";
+import { getRuntimeEnv } from "@/server/runtime-env";
 
 export const apiScopes = ["projects:read", "runs:read", "runs:write"] as const;
 export type ApiScope = typeof apiScopes[number];
@@ -8,7 +9,7 @@ export type ApiScope = typeof apiScopes[number];
 const RATE_LIMIT = 60;
 
 async function getD1() {
-  const { env } = await import("cloudflare:workers");
+  const env = await getRuntimeEnv();
   if (!env.DB) throw new Error("D1 binding DB is unavailable");
   return env.DB;
 }

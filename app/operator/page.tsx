@@ -62,6 +62,7 @@ type OperatorSnapshot = {
   supportCases: SupportCase[];
   generatedAt: string;
 };
+type OperatorResult = OperatorSnapshot & { error?: string };
 
 function date(value: string | null) {
   if (!value) return "—";
@@ -82,7 +83,7 @@ export default function OperatorPage() {
   const [notice, setNotice] = useState("");
   async function load() {
     const response = await fetch("/api/operator", { cache: "no-store" });
-    const result = await response.json();
+    const result = await response.json() as OperatorResult;
     if (!response.ok)
       throw new Error(result.error || "Operator console unavailable");
     setData(result);
@@ -91,7 +92,7 @@ export default function OperatorPage() {
     const controller = new AbortController();
     fetch("/api/operator", { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
-        const result = await response.json();
+        const result = await response.json() as OperatorResult;
         if (!response.ok)
           throw new Error(result.error || "Operator console unavailable");
         return result;
@@ -119,7 +120,7 @@ export default function OperatorPage() {
           note: form.get("note"),
         }),
       });
-      const result = await response.json();
+      const result = await response.json() as { error?: string };
       if (!response.ok)
         throw new Error(result.error || "Unable to update support case");
       await load();

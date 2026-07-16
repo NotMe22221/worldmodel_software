@@ -2,7 +2,7 @@ import { setLaunchCheck } from "@/db/operations";
 import { requestIdentity } from "@/server/request-identity";
 
 export async function POST(request: Request) {
-  const email = requestIdentity(request);
+  const email = await requestIdentity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   let payload: { key?: string; passed?: boolean; evidence?: string };
   try { payload = await request.json(); }

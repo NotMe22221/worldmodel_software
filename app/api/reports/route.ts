@@ -1,16 +1,9 @@
 import { getSimulationReport } from "../../../db/saas";
 import { formatVerificationReport } from "../../../worldmodel/verification-report.mjs";
-
-function identity(request: Request) {
-  const email = request.headers.get("oai-authenticated-user-email");
-  if (email) return email;
-  const host = new URL(request.url).hostname;
-  if (host === "localhost" || host === "127.0.0.1") return "demo@worldmodel.dev";
-  return null;
-}
+import { requestIdentity } from "../../../server/request-identity";
 
 export async function GET(request: Request) {
-  const email = identity(request);
+  const email = await requestIdentity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   const runId = new URL(request.url).searchParams.get("run");
   if (!runId) return Response.json({ error: "A report run is required" }, { status: 400 });

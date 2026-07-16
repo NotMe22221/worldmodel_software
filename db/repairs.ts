@@ -1,6 +1,7 @@
 import { recordAudit } from "./audit";
 import { getSaasSnapshot, requireRole, requireWriteEntitlement } from "./saas";
 import { repairTransition } from "../worldmodel/repair-workflow.mjs";
+import { getRuntimeEnv } from "@/server/runtime-env";
 import {
   githubDraftBody,
   githubEvidencePath,
@@ -16,7 +17,7 @@ type RepairStatus =
   | "pr_ready";
 
 async function getD1() {
-  const { env } = await import("cloudflare:workers");
+  const env = await getRuntimeEnv();
   if (!env.DB) throw new Error("D1 binding DB is unavailable");
   return env.DB;
 }
@@ -299,8 +300,8 @@ export async function publishRepairPullRequest(
       targetId: proposalId,
       summary: `Published draft pull request #${published.number} for ${repair.title}`,
       metadata: {
-        repository: repair.repository,
-        branch: repair.branch_name,
+        repository: String(repair.repository || ""),
+        branch: String(repair.branch_name || ""),
         pullRequestNumber: published.number,
         url: published.html_url,
       },

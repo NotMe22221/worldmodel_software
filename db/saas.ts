@@ -1,9 +1,10 @@
 import { recordAudit } from "./audit";
 import { resolveEntitlements, usagePeriod } from "../worldmodel/entitlements.mjs";
 import { buildWorkspaceActivation } from "../worldmodel/activation.mjs";
+import { getRuntimeEnv } from "@/server/runtime-env";
 
 async function getD1() {
-  const { env } = await import("cloudflare:workers");
+  const env = await getRuntimeEnv();
   if (!env.DB) throw new Error("D1 binding DB is unavailable");
   return env.DB;
 }
@@ -113,6 +114,14 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS integration_states (token TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), purpose TEXT NOT NULL, installation_id TEXT, created_by TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)"),
     db.prepare("CREATE TABLE IF NOT EXISTS github_installations (installation_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), account_login TEXT NOT NULL, account_type TEXT NOT NULL, repository_selection TEXT NOT NULL, permissions_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', connected_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS github_repositories (repository_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL REFERENCES github_installations(installation_id), workspace_id TEXT NOT NULL REFERENCES workspaces(id), full_name TEXT NOT NULL, default_branch TEXT NOT NULL, is_private INTEGER NOT NULL DEFAULT 1, selected INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS composio_connection_attempts (state_hash TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), created_by TEXT NOT NULL, composio_user_id TEXT NOT NULL, connected_account_id TEXT, auth_config_id TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS composio_attempts_workspace_idx ON composio_connection_attempts(workspace_id, expires_at)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS composio_connections (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), connected_account_id TEXT NOT NULL, composio_user_id TEXT NOT NULL, auth_config_id TEXT NOT NULL, toolkit_slug TEXT NOT NULL DEFAULT 'github', provider_login TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', connected_by TEXT NOT NULL, last_synced_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS composio_connections_workspace_account_idx ON composio_connections(workspace_id, connected_account_id)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS composio_connections_workspace_idx ON composio_connections(workspace_id, status)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS composio_github_repositories (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES composio_connections(id), workspace_id TEXT NOT NULL REFERENCES workspaces(id), repository_id TEXT NOT NULL, full_name TEXT NOT NULL, default_branch TEXT NOT NULL, is_private INTEGER NOT NULL DEFAULT 1, html_url TEXT NOT NULL, selected INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS composio_repositories_connection_repo_idx ON composio_github_repositories(connection_id, repository_id)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS composio_repositories_workspace_idx ON composio_github_repositories(workspace_id, selected, full_name)"),
     db.prepare("CREATE TABLE IF NOT EXISTS subscriptions (workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id), stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT NOT NULL DEFAULT 'trialing', plan TEXT NOT NULL DEFAULT 'trial', current_period_end TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS billing_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS github_installations_workspace_idx ON github_installations(workspace_id)"),
@@ -138,24 +147,18 @@ export async function ensureSaasSchema() {
   await ensureSupportOperationsColumns(db);
 }
 
-export async function seedWorkspace(email: string) {
+export async function seedWorkspace(email: string, preferredName?: string) {
   const db = await getD1();
-  const existingMembership = await db.prepare("SELECT workspace_id FROM workspace_members WHERE lower(email) = lower(?) LIMIT 1").bind(email).first();
+  const existingMembership = await db.prepare("SELECT m.workspace_id FROM workspace_members m JOIN workspaces w ON w.id=m.workspace_id WHERE lower(m.email)=lower(?) AND w.workspace_mode='customer' LIMIT 1").bind(email).first();
   if (existingMembership) return;
   const suffix = workspaceSuffix(email);
   const workspaceId = `ws_${suffix}`;
-  const projectId = `proj_checkout_${suffix}`;
+  const ownerName = email.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 60) || "Engineering";
+  const workspaceName = preferredName?.trim().slice(0, 80) || `${ownerName} Workspace`;
   await db.batch([
-    db.prepare("INSERT OR IGNORE INTO workspaces (id, name, owner_email, plan, simulation_minutes, monthly_limit, workspace_mode, trial_ends_at, usage_period_start) VALUES (?, ?, ?, ?, ?, ?, 'sample', ?, ?)").bind(workspaceId, "Northstar Engineering", email, "pro_trial", 214, 500, new Date(Date.now() + 14 * 86_400_000).toISOString(), usagePeriod().start),
+    db.prepare("INSERT OR IGNORE INTO workspaces (id, name, owner_email, plan, simulation_minutes, monthly_limit, workspace_mode, trial_ends_at, usage_period_start) VALUES (?, ?, ?, ?, 0, ?, 'customer', ?, ?)").bind(workspaceId, workspaceName, email, "pro_trial", 500, new Date(Date.now() + 14 * 86_400_000).toISOString(), usagePeriod().start),
     db.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, email, role) VALUES (?, ?, ?)").bind(workspaceId, email, "owner"),
-    db.prepare("INSERT OR IGNORE INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, 'sample', 0, ?, ?, ?)").bind(projectId, workspaceId, "Checkout resilience", "shopstream/demo-store", "main", "ready", 94, 7),
-    db.prepare("INSERT OR IGNORE INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(`run_payment_${suffix}`, projectId, "Payment outage", "verified", 31, 94, "0.4%", 488, 100, 120, "2026-07-13T23:42:00Z"),
-    db.prepare("INSERT OR IGNORE INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(`run_database_${suffix}`, projectId, "Database slowdown", "completed", 38, null, "21.4%", 3190, 54, 120, "2026-07-12T18:20:00Z"),
-    db.prepare("INSERT OR IGNORE INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(`run_traffic_${suffix}`, projectId, "Traffic spike", "completed", 42, null, "18.7%", 2840, 61, 120, "2026-07-11T16:08:00Z"),
-    db.prepare("UPDATE simulation_runs SET scenario_key = COALESCE(scenario_key, 'payments'), scenario_fingerprint = COALESCE(scenario_fingerprint, 'scn_payment_503_45s_v1'), seed = COALESCE(seed, 'wm_seed_checkout_0713'), before_error_rate = COALESCE(before_error_rate, '32.1%'), after_error_rate = COALESCE(after_error_rate, '0.4%'), before_latency_ms = COALESCE(before_latency_ms, 4060), after_latency_ms = COALESCE(after_latency_ms, 488), before_journey_success = COALESCE(before_journey_success, 22), after_journey_success = COALESCE(after_journey_success, 100), verified_at = COALESCE(verified_at, '2026-07-13T23:42:00Z') WHERE id = ?").bind(`run_payment_${suffix}`),
-    db.prepare("UPDATE simulation_runs SET scenario_key = COALESCE(scenario_key, 'database'), scenario_fingerprint = COALESCE(scenario_fingerprint, 'scn_database_800ms_v1'), seed = COALESCE(seed, 'wm_seed_database_0712'), before_error_rate = COALESCE(before_error_rate, '21.4%'), before_latency_ms = COALESCE(before_latency_ms, 3190), before_journey_success = COALESCE(before_journey_success, 54) WHERE id = ?").bind(`run_database_${suffix}`),
-    db.prepare("UPDATE simulation_runs SET scenario_key = COALESCE(scenario_key, 'traffic'), scenario_fingerprint = COALESCE(scenario_fingerprint, 'scn_traffic_20x_v1'), seed = COALESCE(seed, 'wm_seed_traffic_0711'), before_error_rate = COALESCE(before_error_rate, '18.7%'), before_latency_ms = COALESCE(before_latency_ms, 2840), before_journey_success = COALESCE(before_journey_success, 61) WHERE id = ?").bind(`run_traffic_${suffix}`),
-    db.prepare("UPDATE simulation_runs SET evidence_kind = 'sample_fixture' WHERE project_id = ?").bind(projectId),
+    db.prepare("INSERT INTO user_preferences (email, active_workspace_id) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET active_workspace_id=excluded.active_workspace_id, updated_at=CURRENT_TIMESTAMP").bind(email.toLowerCase(), workspaceId),
   ]);
 }
 
@@ -163,7 +166,7 @@ export async function getSaasSnapshot(email: string) {
   await ensureSaasSchema();
   await seedWorkspace(email);
   const db = await getD1();
-  const workspace = await db.prepare("SELECT w.*, m.role AS membership_role FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id LEFT JOIN user_preferences pref ON lower(pref.email) = lower(m.email) WHERE lower(m.email) = lower(?) ORDER BY CASE WHEN w.id = pref.active_workspace_id THEN 0 ELSE 1 END, CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'member' THEN 2 ELSE 3 END, w.created_at LIMIT 1").bind(email).first<{ id: string; membership_role: string } & Record<string, unknown>>();
+  const workspace = await db.prepare("SELECT w.*, m.role AS membership_role FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id LEFT JOIN user_preferences pref ON lower(pref.email) = lower(m.email) WHERE lower(m.email) = lower(?) AND w.workspace_mode='customer' ORDER BY CASE WHEN w.id = pref.active_workspace_id THEN 0 ELSE 1 END, CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'member' THEN 2 ELSE 3 END, w.created_at LIMIT 1").bind(email).first<{ id: string; membership_role: string } & Record<string, unknown>>();
   if (!workspace) throw new Error("Workspace not found");
   const period = usagePeriod();
   if (String(workspace.usage_period_start || "") !== period.start) {
@@ -176,10 +179,12 @@ export async function getSaasSnapshot(email: string) {
   await db.prepare("INSERT OR IGNORE INTO repair_proposals (id, workspace_id, run_id, status, title, summary, files_json, tests_json, risks_json, created_by, requested_at) SELECT 'repair_' || substr(r.id, 5), ?, r.id, 'ready_for_review', 'Graceful ' || lower(r.scenario) || ' recovery', 'Codex generated bounded timeout, idempotency, and recovery controls for the verified scenario.', '[\"src/payment.ts\",\"tests/checkout.spec.mjs\"]', '[\"Identical scenario replay\",\"Critical user journey\",\"Duplicate-order regression\"]', '[\"Regional failover remains unverified\",\"Queue saturation beyond the tested load remains unverified\"]', 'codex@system.worldmodel', CURRENT_TIMESTAMP FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? AND r.status = 'verified'").bind(workspace.id, workspace.id).run();
   const repairs = await db.prepare("SELECT rp.*, r.scenario, r.scenario_fingerprint, r.before_score, r.after_score, r.verified_at, r.evidence_kind, r.environment_id, r.journey_runner, r.environment_destroyed_at, r.before_service_health, r.after_service_health, p.name AS project_name, p.repository, p.branch AS project_branch, p.source_kind, p.repository_verified FROM repair_proposals rp JOIN simulation_runs r ON r.id = rp.run_id JOIN projects p ON p.id = r.project_id WHERE rp.workspace_id = ? ORDER BY rp.updated_at DESC").bind(workspace.id).all();
   const members = await db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? ORDER BY created_at").bind(workspace.id).all();
-  const availableWorkspaces = await db.prepare("SELECT w.id, w.name, w.workspace_mode, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id WHERE lower(m.email) = lower(?) ORDER BY w.workspace_mode, w.name").bind(email).all();
-  const pendingInvitations = (workspace.membership_role === "owner" || workspace.membership_role === "admin") ? await db.prepare("SELECT id, email, role, status, invited_by, expires_at, created_at, accepted_at, revoked_at FROM workspace_invitations WHERE workspace_id = ? AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP ORDER BY created_at DESC").bind(workspace.id).all() : { results: [] };
+  const availableWorkspaces = await db.prepare("SELECT w.id, w.name, w.workspace_mode, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id WHERE lower(m.email) = lower(?) AND w.workspace_mode='customer' ORDER BY w.name").bind(email).all();
+  const pendingInvitations = (workspace.membership_role === "owner" || workspace.membership_role === "admin") ? await db.prepare("SELECT id, email, role, status, invited_by, expires_at, created_at, accepted_at, revoked_at FROM workspace_invitations WHERE workspace_id = ? AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP ORDER BY created_at DESC").bind(workspace.id).all() : { results: [] as Record<string, unknown>[] };
   const githubInstallations = await db.prepare("SELECT installation_id, account_login, account_type, repository_selection, status, created_at AS connected_at FROM github_installations WHERE workspace_id = ? ORDER BY created_at DESC").bind(workspace.id).all();
   const githubRepositories = await db.prepare("SELECT repository_id, installation_id, full_name, default_branch, is_private, selected, synced_at FROM github_repositories WHERE workspace_id = ? ORDER BY selected DESC, full_name LIMIT 100").bind(workspace.id).all();
+  const composioConnections = await db.prepare("SELECT id, connected_account_id, provider_login, toolkit_slug, status, last_synced_at, created_at AS connected_at FROM composio_connections WHERE workspace_id = ? ORDER BY created_at DESC").bind(workspace.id).all();
+  const composioRepositories = await db.prepare("SELECT id, connection_id, repository_id, full_name, default_branch, is_private, html_url, selected, synced_at FROM composio_github_repositories WHERE workspace_id = ? ORDER BY selected DESC, full_name LIMIT 100").bind(workspace.id).all();
   const subscription = await db.prepare("SELECT status, plan, current_period_end, updated_at, CASE WHEN stripe_customer_id IS NOT NULL THEN 1 ELSE 0 END AS portal_available FROM subscriptions WHERE workspace_id = ?").bind(workspace.id).first();
   const entitlements = resolveEntitlements({ workspace, subscription });
   if (Number(workspace.monthly_limit) !== entitlements.limits.simulationMinutes || String(workspace.plan) !== entitlements.planKey) {
@@ -188,18 +193,18 @@ export async function getSaasSnapshot(email: string) {
     workspace.monthly_limit = entitlements.limits.simulationMinutes;
   }
   const auditAccess = workspace.membership_role === "owner" || workspace.membership_role === "admin";
-  const auditLogs = auditAccess ? await db.prepare("SELECT id, actor_email, action, target_type, target_id, summary, created_at FROM audit_logs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : { results: [] };
+  const auditLogs = auditAccess ? await db.prepare("SELECT id, actor_email, action, target_type, target_id, summary, created_at FROM audit_logs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : { results: [] as Record<string, unknown>[] };
   const supportCases = auditAccess ? await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspace.id).all() : await db.prepare("SELECT id, created_by, subject, category, priority, status, created_at, updated_at FROM support_cases WHERE workspace_id = ? AND lower(created_by) = lower(?) ORDER BY created_at DESC LIMIT 50").bind(workspace.id, email).all();
-  const launchChecks = await db.prepare("SELECT check_key, passed, evidence, updated_at FROM launch_checks WHERE workspace_id = ? ORDER BY check_key").bind(workspace.id).all();
-  const deletionRequests = workspace.membership_role === "owner" ? await db.prepare("SELECT id, scope, status, reason, execute_after, created_at, canceled_at, completed_at FROM data_deletion_requests WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 10").bind(workspace.id).all() : { results: [] };
-  const apiKeys = auditAccess ? await db.prepare("SELECT id, name, key_prefix, scopes_json, status, created_by, last_used_at, expires_at, created_at, revoked_at FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 20").bind(workspace.id).all() : { results: [] };
+  const launchChecks = await db.prepare("SELECT check_key, passed, evidence, updated_at FROM launch_checks WHERE workspace_id = ? ORDER BY check_key").bind(workspace.id).all<{ check_key: string; passed: number | boolean; evidence?: string | null; updated_at: string }>();
+  const deletionRequests = workspace.membership_role === "owner" ? await db.prepare("SELECT id, scope, status, reason, execute_after, created_at, canceled_at, completed_at FROM data_deletion_requests WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 10").bind(workspace.id).all() : { results: [] as Record<string, unknown>[] };
+  const apiKeys = auditAccess ? await db.prepare("SELECT id, name, key_prefix, scopes_json, status, created_by, last_used_at, expires_at, created_at, revoked_at FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 20").bind(workspace.id).all() : { results: [] as Record<string, unknown>[] };
   const apiUsage = auditAccess ? await db.prepare("SELECT COALESCE(SUM(b.request_count), 0) AS requests_today FROM api_rate_buckets b JOIN api_keys k ON k.id = b.api_key_id WHERE k.workspace_id = ? AND b.bucket_start >= date('now')").bind(workspace.id).first() : { requests_today: 0 };
   const projectRows = projects.results as Array<Record<string, unknown>>;
   const runRows = runs.results as Array<Record<string, unknown>>;
   const memberRows = members.results as Array<Record<string, unknown>>;
   const invitationRows = pendingInvitations.results as Array<Record<string, unknown>>;
   const activation = buildWorkspaceActivation({ workspaceMode: String(workspace.workspace_mode), projects: projectRows, runs: runRows, members: memberRows, invitations: invitationRows });
-  return { workspace, availableWorkspaces: availableWorkspaces.results, projects: projectRows, runs: runRows, repairs: repairs.results, members: memberRows, pendingInvitations: invitationRows, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, entitlements, activation, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results, apiKeys: apiKeys.results, apiUsage };
+  return { workspace, availableWorkspaces: availableWorkspaces.results, projects: projectRows, runs: runRows, repairs: repairs.results, members: memberRows, pendingInvitations: invitationRows, composioConnections: composioConnections.results, composioRepositories: composioRepositories.results, githubInstallations: githubInstallations.results, githubRepositories: githubRepositories.results, subscription, entitlements, activation, auditAccess, auditLogs: auditLogs.results, supportCases: supportCases.results, launchChecks: launchChecks.results, deletionRequests: deletionRequests.results, apiKeys: apiKeys.results, apiUsage };
 }
 
 export function requireRole(snapshot: Awaited<ReturnType<typeof getSaasSnapshot>>, allowed: string[]) {
@@ -214,15 +219,15 @@ export function requireWriteEntitlement(entitlements: { canWrite: boolean; messa
 export async function switchWorkspace(email: string, workspaceId: string) {
   await ensureSaasSchema();
   const db = await getD1();
-  const membership = await db.prepare("SELECT role FROM workspace_members WHERE workspace_id = ? AND lower(email) = lower(?)").bind(workspaceId, email).first();
+  const membership = await db.prepare("SELECT m.role FROM workspace_members m JOIN workspaces w ON w.id=m.workspace_id WHERE m.workspace_id=? AND lower(m.email)=lower(?) AND w.workspace_mode='customer'").bind(workspaceId, email).first();
   if (!membership) throw new Error("Workspace membership not found");
   await db.prepare("INSERT INTO user_preferences (email, active_workspace_id) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET active_workspace_id = excluded.active_workspace_id, updated_at = CURRENT_TIMESTAMP").bind(email.toLowerCase(), workspaceId).run();
   return { workspaceId };
 }
 
-export async function provisionCustomerWorkspace(email: string) {
+export async function provisionCustomerWorkspace(email: string, preferredName?: string) {
   await ensureSaasSchema();
-  await seedWorkspace(email);
+  await seedWorkspace(email, preferredName);
   const db = await getD1();
   const existing = await db.prepare("SELECT w.id, w.name, w.workspace_mode FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE lower(m.email) = lower(?) AND m.role = 'owner' AND w.workspace_mode = 'customer' ORDER BY w.created_at LIMIT 1").bind(email).first<{ id: string; name: string; workspace_mode: string }>();
   if (existing) {
@@ -238,7 +243,7 @@ export async function provisionCustomerWorkspace(email: string) {
     db.prepare("INSERT INTO user_preferences (email, active_workspace_id) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET active_workspace_id = excluded.active_workspace_id, updated_at = CURRENT_TIMESTAMP").bind(email.toLowerCase(), id),
   ]);
   const created = Boolean(insertion.meta?.changes);
-  if (created) await recordAudit({ workspaceId: id, actorEmail: email, action: "workspace.provisioned", targetType: "workspace", targetId: id, summary: "Provisioned a clean customer workspace", metadata: { source: "sample_onboarding" } });
+  if (created) await recordAudit({ workspaceId: id, actorEmail: email, action: "workspace.provisioned", targetType: "workspace", targetId: id, summary: "Provisioned a clean customer workspace", metadata: { source: "account_onboarding" } });
   return { workspace: { id, name, workspace_mode: "customer" }, created };
 }
 
@@ -314,7 +319,7 @@ export async function createSimulationRunForWorkspace(workspaceId: string, actor
 }
 
 type ObservedMetricSet = { resilienceScore: number; errorRate: number; latencyMs: number; journeySuccess: number; serviceHealth: number };
-type ObservedRunInput = {
+export type ObservedRunInput = {
   projectId: string;
   scenario: ScenarioKey;
   fingerprint: string;

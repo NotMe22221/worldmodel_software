@@ -1,7 +1,22 @@
-export function requestIdentity(request: Request) {
-  const email = request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase();
-  if (email) return email;
-  const host = new URL(request.url).hostname;
-  if (host === "localhost" || host === "127.0.0.1") return "demo@worldmodel.dev";
-  return null;
+import { sessionUser } from "./auth.ts";
+
+export async function requestUser(request: Request) {
+  const hostedEmail = request.headers
+    .get("oai-authenticated-user-email")
+    ?.trim()
+    .toLowerCase();
+  if (hostedEmail) {
+    return {
+      email: hostedEmail,
+      displayName:
+        request.headers.get("oai-authenticated-user-full-name")?.trim() ||
+        hostedEmail.split("@")[0],
+      organizationName: "",
+    };
+  }
+  return sessionUser(request.headers.get("cookie"));
+}
+
+export async function requestIdentity(request: Request) {
+  return (await requestUser(request))?.email || null;
 }

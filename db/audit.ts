@@ -1,5 +1,7 @@
+import { getRuntimeEnv } from "@/server/runtime-env";
+
 async function getD1() {
-  const { env } = await import("cloudflare:workers");
+  const env = await getRuntimeEnv();
   if (!env.DB) throw new Error("D1 binding DB is unavailable");
   return env.DB;
 }

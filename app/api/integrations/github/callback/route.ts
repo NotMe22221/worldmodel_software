@@ -7,7 +7,7 @@ function dashboard(request: Request, result: string) {
 }
 
 export async function GET(request: Request) {
-  const email = requestIdentity(request);
+  const email = await requestIdentity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     const redirectUri = new URL("/api/integrations/github/callback", request.url).toString();
     const userToken = await exchangeGithubCode(code, redirectUri);
     const installations = await accessibleInstallations(userToken);
-    const installation = authorizedInstallation(installations, pending.installation_id);
+    const installation = authorizedInstallation(installations, String(pending.installation_id));
     if (!installation) throw new Error("The authorized GitHub user cannot access this installation");
     const repositories = await installationRepositories(String(installation.id));
     await completeGithubConnection(email, state, installation, repositories);

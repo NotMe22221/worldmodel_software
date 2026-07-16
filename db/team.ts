@@ -1,11 +1,12 @@
 import { recordAudit } from "./audit";
 import { ensureSaasSchema, getSaasSnapshot, getWorkspaceEntitlements, requireRole, requireWriteEntitlement } from "./saas";
 import { digestInvitationSecret, generateInvitationSecret } from "../worldmodel/invitation-security.mjs";
+import { getRuntimeEnv } from "@/server/runtime-env";
 
 type TeamRole = "admin" | "member" | "viewer";
 
 async function getD1() {
-  const { env } = await import("cloudflare:workers");
+  const env = await getRuntimeEnv();
   if (!env.DB) throw new Error("D1 binding DB is unavailable");
   return env.DB;
 }

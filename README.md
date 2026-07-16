@@ -1,24 +1,27 @@
 # WorldModel for Software
 
-A visual flight simulator and SaaS control plane for software systems. WorldModel maps a connected repository, injects repeatable failures, shows their impact on a critical journey, generates a Codex repair, replays the immutable scenario, and preserves the evidence for release review.
+A self-serve reliability platform for TypeScript systems. A customer connects a GitHub repository, approves an exact-commit model and executable manifest, defines critical journeys, asks the project AI to draft up to twenty tests, observes real isolated executions, investigates failures, compares three independently verified repairs, and explicitly approves any draft pull request.
 
-## Demo
+## Product architecture
 
-1. Click **Start a simulation**, name the project, and select the prepared TypeScript repository.
-2. Review the seven detected components, evidence confidence, disposable environment, and healthy baseline.
-3. Confirm the structured payment-outage scenario and click **Run simulation**.
-4. Follow the red propagation path from Stripe API through Checkout and Orders to the customer journey.
-5. Click **Investigate with Codex**, inspect the code and regression-test diff, and replay the identical scenario.
-6. Compare the verified metrics, download the risk-aware report, and prepare the draft PR.
+- Project-centered routes for model review, environment approval, journeys, persistent AI, campaigns, live replay, repair tournaments, and reports.
+- Cloudflare Workflows own scans, campaigns, cancellation checkpoints, repair tournaments, retries, and durable state transitions.
+- Cloudflare Sandbox SDK containers clone the approved commit, install with bounded commands, start services, run health checks and Playwright journeys, record baseline/failure measurements, and destroy the environment before signing evidence.
+- Durable Objects provide hibernating WebSocket fanout while D1 preserves ordered events for refresh-safe replay.
+- R2 stores redacted, hash-addressed raw artifacts with 30-day expiration metadata.
+- OpenAI Responses uses a strict `draft_campaign` function call, persistent response state, and recorded model, response, prompt version, usage, tool arguments, validation, and approval state.
+- GitHub Actions fallback uses GitHub OIDC and short-lived run tokens. No permanent WorldModel repository secret is generated.
+- Deterministic server validators—not model prose—gate manifests, scenarios, campaign limits, evidence promotion, candidate scores, report approval, sharing, and draft PR publication.
 
-The full path is deterministic and takes roughly 20 seconds. Traffic spike and database slowdown are available from the scenario rail and use the same run contract.
+Customer metrics are labeled observed only after a configured runner submits a matching scenario fingerprint and seed plus teardown attestation. Missing providers fail closed with an actionable configuration state.
 
 ## Verified scope
 
-- Landing page and uninterrupted five-step project setup
-- Prepared TypeScript repository manifest with seven evidenced components and six dependencies
-- Editable interactive system graph for `shopstream/demo-store`
-- Disposable-environment specification and baseline health gate
+- Public SaaS landing page with real registration and sign-in entry points
+- PBKDF2-hashed credentials, revocable HTTP-only sessions, protected application routes, and empty customer workspace provisioning
+- Owner-only encrypted local provider configuration for GitHub App and OpenAI credentials; production uses platform secrets
+- Exact-commit TypeScript repository modeling with evidence-linked components and dependencies
+- Editable project graph, disposable-environment manifest, and baseline health gates
 - Traffic spike, database slowdown, and payment outage scenarios
 - Natural-language scenario interpretation with explicit safety limits
 - Six-step Playwright checkout journey fixture at `/journey-test`
@@ -29,9 +32,8 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Disposable virtual-lab harness that seeds data, starts five HTTP services, injects and recovers a fault, and destroys its temporary workspace
 - Downloadable verification report with residual risks and draft-PR artifact
 - Tenant-backed workspace with projects, run history, reports, usage, roles, integrations, and plan state
-- Explicit sample/customer workspace modes with one-click idempotent clean-workspace provisioning, isolated repositories and evidence, sample-labeled exports, and sample draft-PR publication denial
-- Persisted customer activation milestones for repository connection, first simulation, verified replay, and team adoption, plus a sample-excluding operator conversion funnel
-- Durable repository provenance that distinguishes samples, manual unverified entries, and installation-validated GitHub imports; ownership claims, activation, verification reports, and draft-PR handoff honor that boundary
+- Persisted customer activation milestones for repository connection, first simulation, verified replay, and team adoption
+- Durable repository provenance that distinguishes manual unverified entries and installation-validated GitHub imports; ownership claims, activation, verification reports, and draft-PR handoff honor that boundary
 - Simulation evidence provenance that labels prepared fixtures, deterministic modeled replays, and observed virtual-environment runs; reports and draft PRs carry the same disclosure
 - Scoped and rate-limited CI ingestion for idempotent observed Playwright evidence with bounded metrics, scenario-contract validation, environment teardown attestations, and immediate key revocation
 - Authenticated per-project GitHub Actions workflow downloads that reference CI-managed secrets, require a customer-owned disposable-test command, and submit the resulting evidence artifact without embedding credentials
@@ -50,7 +52,7 @@ The full path is deterministic and takes roughly 20 seconds. Traffic spike and d
 - Identity-bound, one-time team invitation links with hashed secrets, expiry, revocation, pending-seat accounting, workspace switching, role changes, removals, rate limiting, and audit evidence
 - Durable Codex repair review queues with written approval evidence, enforced state transitions, residual-risk packets, role-gated decisions, and truthful draft-PR handoff status
 - Public trust, security, privacy, pilot terms, and support disclosures that distinguish implemented controls from planned certifications
-- Responsive product and sub-three-minute demonstration path
+- Responsive project-centered product experience
 
 ## Local use
 
@@ -59,10 +61,14 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. Validate with `npm test` and `npm run lint`.
+Open the URL printed by the dev server and create an account. New accounts begin with no prepared projects, runs, or reports. Local owners can configure a GitHub App and OpenAI key at `/settings/providers`; credentials are encrypted before storage and never returned by the API.
+
+Validate with `npm test`, `npm run lint`, and `npm run typecheck:worker`.
 
 ## Production integrations
 
-Copy the keys from `.env.example` into the Sites production environment rather than committing secrets. Configure the GitHub App setup URL as `/api/integrations/github/setup` and its OAuth callback as `/api/integrations/github/callback`. Grant repository **Contents: write** and **Pull requests: write** only if draft-PR publication is enabled. The connection flow validates a one-time workspace state and confirms the installation appears in the authorizing user’s accessible installations before saving repository metadata. Approved handoffs use a short-lived installation token to create an idempotent branch, commit the review packet under `.worldmodel/repairs/`, and open a draft pull request.
+Copy the keys from `.env.example` into the production environment rather than committing secrets. Configure the GitHub App setup URL as `/api/integrations/github/setup` and its OAuth callback as `/api/integrations/github/callback`. Grant repository **Contents: write** and **Pull requests: write** only if verified draft-PR publication is enabled. GitHub Actions callbacks exchange a repository/branch-bound OIDC assertion at `/api/v1/runner/token`; evidence is accepted once at `/api/v1/runner/evidence` with an expiring token.
+
+Deploy the Sandbox container from `Dockerfile.worldmodel`, create the D1/R2/Workflow/Durable Object bindings in `vite.config.ts`, set `OPENAI_API_KEY`, `RUNNER_EVIDENCE_SECRET`, and `RUNNER_TOKEN_SECRET`, and apply `drizzle/0017_living_worldmodel.sql`. Readiness stays closed unless the AI, event hub, artifacts, campaign workflow, and at least one signed execution backend are present.
 
 Configure Stripe Checkout prices for Starter and Pro, activate and brand the Stripe customer portal, then register `/api/billing/webhook` for `checkout.session.completed` and `customer.subscription.*` lifecycle events. Subscription limits change only after a fresh, matching raw-body webhook signature is processed. Portal sessions are created on demand only for authenticated workspace owners/admins with a linked Stripe customer and return to the same WorldModel origin.

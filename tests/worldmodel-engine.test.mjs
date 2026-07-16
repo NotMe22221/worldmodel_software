@@ -274,9 +274,11 @@ test("runner workflow is tenant-project bound and contains no embedded secret", 
     projectId: "proj_verified_123",
     apiOrigin: "https://worldmodel.example.com",
   });
-  assert.match(workflow, /permissions:\n  contents: read/);
+  assert.match(workflow, /permissions:\n  contents: read\n  id-token: write/);
   assert.match(workflow, /projectId:\"proj_verified_123\"/);
-  assert.match(workflow, /secrets\.WORLDMODEL_API_KEY/);
+  assert.match(workflow, /ACTIONS_ID_TOKEN_REQUEST_TOKEN/);
+  assert.match(workflow, /api\/v1\/runner\/token/);
+  assert.doesNotMatch(workflow, /secrets\.WORLDMODEL_API_KEY/);
   assert.match(workflow, /worldmodel:observe/);
   assert.doesNotMatch(workflow, /wm_live_/);
   assert.throws(
@@ -500,7 +502,7 @@ test("commercial launch gate is derived from live state and owner attestations",
     },
   });
   assert.equal(baseline.passed, 8);
-  assert.equal(baseline.total, 10);
+  assert.equal(baseline.total, 12);
   assert.equal(baseline.ready, false);
   assert.match(
     baseline.checks.find((check) => check.key === "github_live").evidence,
@@ -523,6 +525,8 @@ test("commercial launch gate is derived from live state and owner attestations",
     configuration: {
       github: { configured: true },
       billing: { configured: true },
+      intelligence: { configured: true },
+      execution: { campaignWorkflow: true, eventHub: true, artifacts: true, sandboxRunner: true, githubActionsRunner: false },
     },
   });
   assert.equal(ready.score, 100);

@@ -160,6 +160,7 @@ export async function repositoryTreeWithToken(
   if (!/^[A-Za-z0-9._/-]{1,120}$/.test(branch))
     throw new Error("GitHub branch name is invalid");
   const result = await githubFetch<{
+    sha: string;
     truncated: boolean;
     tree: Array<{ path: string; type: string; size?: number }>;
   }>(
@@ -167,6 +168,7 @@ export async function repositoryTreeWithToken(
     token,
   );
   return {
+    commitSha: result.sha,
     truncated: Boolean(result.truncated),
     entries: result.tree
       .filter((entry) => entry.type === "blob" || entry.type === "tree")
@@ -280,6 +282,25 @@ export async function publishGithubDraftEvidenceWithToken(
     }),
   });
   return created.payload;
+}
+
+export async function publishGithubDraftFiles(input: { installationId: string; owner: string; repository: string; baseBranch: string; baseSha: string; headBranch: string; title: string; body: string; files: Array<{ path: string; content: string }> }) {
+  const token = await installationToken(input.installationId);
+  if (!/^[a-f0-9]{40}$/i.test(input.baseSha) || !/^worldmodel\/[a-z0-9._/-]{3,180}$/i.test(input.headBranch)) throw new Error("GitHub draft branch basis is invalid");
+  if (!input.files.length || input.files.length > 30) throw new Error("GitHub draft requires 1-30 bounded files");
+  for (const file of input.files) if (!/^[A-Za-z0-9_.\/-]{1,240}$/.test(file.path) || file.path.startsWith("/") || file.path.split("/").includes("..") || file.path.startsWith(".github/workflows/") || file.content.length > 1_000_000) throw new Error(`GitHub draft file is prohibited: ${file.path}`);
+  const root = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}`;
+  const headRef = `${root}/git/ref/heads/${input.headBranch.split("/").map(encodeURIComponent).join("/")}`;
+  const existingHead = await githubRequest<{ object: { sha: string } }>(headRef, token, undefined, [200, 404]);
+  if (existingHead.status === 404) await githubRequest(`${root}/git/refs`, token, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${input.headBranch}`, sha: input.baseSha }) });
+  for (const file of input.files) {
+    const contentUrl = `${root}/contents/${file.path.split("/").map(encodeURIComponent).join("/")}`;
+    const existing = await githubRequest<{ sha: string }>(`${contentUrl}?ref=${encodeURIComponent(input.headBranch)}`, token, undefined, [200, 404]);
+    await githubRequest(contentUrl, token, { method: "PUT", body: JSON.stringify({ message: `fix: WorldModel verified repair (${file.path})`, content: standardBase64(file.content), branch: input.headBranch, ...(existing.status === 200 ? { sha: existing.payload.sha } : {}) }) });
+  }
+  const existingPulls = await githubRequest<Array<{ number: number; html_url: string; draft: boolean }>>(`${root}/pulls?state=open&head=${encodeURIComponent(`${input.owner}:${input.headBranch}`)}&base=${encodeURIComponent(input.baseBranch)}`, token);
+  if (existingPulls.payload[0]) return existingPulls.payload[0];
+  return (await githubRequest<{ number: number; html_url: string; draft: boolean }>(`${root}/pulls`, token, { method: "POST", body: JSON.stringify({ title: input.title, head: input.headBranch, base: input.baseBranch, body: input.body, draft: true, maintainer_can_modify: true }) })).payload;
 }
 
 export async function publishGithubDraftEvidence(input: DraftEvidenceInput) {

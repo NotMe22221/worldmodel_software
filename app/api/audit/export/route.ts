@@ -3,7 +3,7 @@ import { requestIdentity } from "@/server/request-identity";
 import { safeCsvCell } from "@/worldmodel/safe-csv.mjs";
 
 export async function GET(request: Request) {
-  const email = requestIdentity(request);
+  const email = await requestIdentity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
     const rows = await getAuditRows(email);

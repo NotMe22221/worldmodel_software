@@ -121,6 +121,26 @@ type GithubRepository = {
   selected: number;
   synced_at: string;
 };
+type ComposioConnection = {
+  id: string;
+  connected_account_id: string;
+  provider_login: string;
+  toolkit_slug: string;
+  status: string;
+  last_synced_at: string | null;
+  connected_at: string;
+};
+type ComposioRepository = {
+  id: string;
+  connection_id: string;
+  repository_id: string;
+  full_name: string;
+  default_branch: string;
+  is_private: number;
+  html_url: string;
+  selected: number;
+  synced_at: string;
+};
 type Subscription = {
   status: string;
   plan: string;
@@ -222,6 +242,8 @@ type Snapshot = {
   repairs: Repair[];
   members: Member[];
   pendingInvitations: WorkspaceInvitation[];
+  composioConnections: ComposioConnection[];
+  composioRepositories: ComposioRepository[];
   githubInstallations: GithubInstallation[];
   githubRepositories: GithubRepository[];
   subscription: Subscription;
@@ -235,6 +257,7 @@ type Snapshot = {
   apiUsage: { requests_today: number };
   readiness: Readiness;
   configuration: {
+    composio: { configured: boolean; githubConfigured: boolean; fixture: boolean };
     github: { configured: boolean; appSlug: string | null };
     billing: { configured: boolean; portalConfigured: boolean };
   };
@@ -291,10 +314,30 @@ function mappedNodes(project: Project) {
   }
 }
 function dateLabel(value: string) {
-  const date = new Date(value);
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  const date = new Date(normalized);
   return Number.isNaN(date.getTime())
     ? "Just now"
     : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function dashboardDateLabel(date = new Date()) {
+  return date
+    .toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    })
+    .toUpperCase();
+}
+
+function greetingLabel(date = new Date()) {
+  const hour = date.getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
 }
 function stringList(value: string) {
   try {
@@ -308,20 +351,47 @@ function repairStatus(value: string) {
   return value.replaceAll("_", " ");
 }
 
+type ApiResult = {
+  error?: string;
+  token: string;
+  url: string;
+  created: boolean;
+  supportCase: { id: string };
+  [key: string]: unknown;
+};
+
+async function readJson<T>(response: Response) {
+  return await response.json() as T;
+}
+
 export default function Dashboard() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>(() => {
+    if (typeof window === "undefined") return "overview";
+    const requested = new URLSearchParams(window.location.search).get("tab") as Tab | null;
+    return requested && navItems.some((item) => item.id === requested) ? requested : "overview";
+  });
   const [data, setData] = useState<Snapshot | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() => {
+    if (typeof window === "undefined") return "";
+    const result = new URLSearchParams(window.location.search).get("composio");
+    if (result === "error") return "Composio could not verify the GitHub connection. Start a new connection and try again.";
+    if (result === "start_error") return "GitHub connection could not start. Your existing workspace is safe; try again or contact support with the correlation ID in the address bar.";
+    if (result === "invalid_state") return "The GitHub connection link was invalid or expired. Start again from Integrations.";
+    return "";
+  });
   const [showCreate, setShowCreate] = useState(false);
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.search).get("composio") === "connected" ? "GitHub connected through Composio. Repositories are ready to import." : "";
+  });
   const [newApiToken, setNewApiToken] = useState("");
   const [newInviteLink, setNewInviteLink] = useState("");
   const load = useCallback(async () => {
     const response = await fetch("/api/saas");
-    const payload = await response.json();
+    const payload = await readJson<Snapshot & { error?: string }>(response);
     if (!response.ok)
       throw new Error(payload.error || "Unable to load workspace");
     setData(payload);
@@ -330,7 +400,7 @@ export default function Dashboard() {
     const controller = new AbortController();
     fetch("/api/saas", { signal: controller.signal })
       .then(async (response) => {
-        const payload = await response.json();
+        const payload = await readJson<Snapshot & { error?: string }>(response);
         if (!response.ok)
           throw new Error(payload.error || "Unable to load workspace");
         return payload;
@@ -351,10 +421,15 @@ export default function Dashboard() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const result = await response.json();
+    const result = await readJson<ApiResult>(response);
     if (!response.ok) throw new Error(result.error || "Unable to save changes");
     await load();
     return result;
+  }
+  async function signOut() {
+    setCreating(true);
+    await fetch("/api/auth/logout", { method: "POST" });
+    location.assign("/login");
   }
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -384,7 +459,7 @@ export default function Dashboard() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const result = await response.json();
+    const result = await readJson<ApiResult>(response);
     if (!response.ok)
       throw new Error(result.error || "Unable to update the team");
     await load();
@@ -502,7 +577,7 @@ export default function Dashboard() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, proposalId, note }),
       });
-      const result = await response.json();
+      const result = await readJson<ApiResult>(response);
       if (!response.ok)
         throw new Error(result.error || "Unable to update repair review");
       await load();
@@ -540,24 +615,36 @@ export default function Dashboard() {
       setCreating(false);
     }
   }
-  async function importRepository(repositoryId: string) {
+  async function composioAction(payload: { action: "sync" | "import" | "disconnect"; connectionId?: string; repositoryId?: string }) {
+    const response = await fetch("/api/integrations/composio/github/repositories", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json() as { error?: string | { message?: string }; project?: Project };
+    if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : result.error?.message || "Composio GitHub operation failed");
+    await load();
+    return result;
+  }
+  async function importComposioRepository(repositoryId: string) {
     setCreating(true);
     setError("");
     try {
-      await mutate({ action: "import-repository", repositoryId });
-      setNotice(
-        "Repository imported. WorldModel is preparing its software twin.",
-      );
+      await composioAction({ action: "import", repositoryId });
+      setNotice("Verified GitHub repository imported at an immutable commit through Composio.");
       setTab("projects");
     } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Unable to import repository",
-      );
-    } finally {
-      setCreating(false);
-    }
+      setError(reason instanceof Error ? reason.message : "Unable to import the Composio repository");
+    } finally { setCreating(false); }
+  }
+  async function syncComposio(connectionId: string) {
+    setCreating(true);
+    setError("");
+    try {
+      await composioAction({ action: "sync", connectionId });
+      setNotice("GitHub repositories synchronized through Composio.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to synchronize GitHub"); }
+    finally { setCreating(false); }
   }
   async function checkout(plan: "starter" | "pro") {
     setCreating(true);
@@ -568,7 +655,7 @@ export default function Dashboard() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ plan }),
       });
-      const result = await response.json();
+      const result = await readJson<ApiResult>(response);
       if (!response.ok)
         throw new Error(result.error || "Unable to start checkout");
       location.href = result.url;
@@ -586,7 +673,7 @@ export default function Dashboard() {
     setError("");
     try {
       const response = await fetch("/api/billing/portal", { method: "POST" });
-      const result = await response.json();
+      const result = await readJson<ApiResult>(response);
       if (!response.ok)
         throw new Error(result.error || "Unable to open billing management");
       location.href = result.url;
@@ -602,9 +689,10 @@ export default function Dashboard() {
   }
   async function createSupport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const formElement = event.currentTarget;
     setCreating(true);
     setError("");
-    const form = new FormData(event.currentTarget);
+    const form = new FormData(formElement);
     try {
       const response = await fetch("/api/support", {
         method: "POST",
@@ -616,11 +704,11 @@ export default function Dashboard() {
           body: form.get("body"),
         }),
       });
-      const result = await response.json();
+      const result = await readJson<ApiResult>(response);
       if (!response.ok)
         throw new Error(result.error || "Unable to create support case");
       await load();
-      event.currentTarget.reset();
+      formElement.reset();
       setNotice(`Support case ${result.supportCase.id} opened.`);
     } catch (reason) {
       setError(
@@ -647,7 +735,7 @@ export default function Dashboard() {
           evidence: form.get("evidence"),
         }),
       });
-      const result = await response.json();
+      const result = await readJson<ApiResult>(response);
       if (!response.ok)
         throw new Error(result.error || "Unable to update launch check");
       await load();
@@ -673,7 +761,7 @@ export default function Dashboard() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "request", reason: form.get("reason") }),
       });
-      const result = await response.json();
+      const result = await readJson<ApiResult>(response);
       if (!response.ok)
         throw new Error(result.error || "Unable to request deletion review");
       await load();
@@ -699,7 +787,7 @@ export default function Dashboard() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "cancel", requestId }),
       });
-      const result = await response.json();
+      const result = await readJson<ApiResult>(response);
       if (!response.ok)
         throw new Error(result.error || "Unable to cancel deletion review");
       await load();
@@ -716,9 +804,10 @@ export default function Dashboard() {
   }
   async function createApiCredential(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const formElement = event.currentTarget;
     setCreating(true);
     setError("");
-    const form = new FormData(event.currentTarget);
+    const form = new FormData(formElement);
     try {
       const expiration = String(form.get("expirationDays") || "");
       const response = await fetch("/api/api-keys", {
@@ -731,12 +820,12 @@ export default function Dashboard() {
           expirationDays: expiration === "never" ? null : Number(expiration),
         }),
       });
-      const result = await response.json();
+      const result = await readJson<ApiResult>(response);
       if (!response.ok)
         throw new Error(result.error || "Unable to create API key");
       setNewApiToken(result.token);
       await load();
-      event.currentTarget.reset();
+      formElement.reset();
     } catch (reason) {
       setError(
         reason instanceof Error ? reason.message : "Unable to create API key",
@@ -754,7 +843,7 @@ export default function Dashboard() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "revoke", keyId }),
       });
-      const result = await response.json();
+      const result = await readJson<ApiResult>(response);
       if (!response.ok)
         throw new Error(result.error || "Unable to revoke API key");
       await load();
@@ -790,6 +879,23 @@ export default function Dashboard() {
   const observedRuns = data.runs.filter(
     (run) => run.status === "verified" && run.evidence_kind === "observed",
   ).length;
+  const observedScoreRuns = data.runs.filter(
+    (run) => run.status === "verified" && run.evidence_kind === "observed",
+  );
+  const observedAverage = observedScoreRuns.length
+    ? Math.round(
+        observedScoreRuns.reduce(
+          (total, run) => total + (run.after_score ?? run.before_score),
+          0,
+        ) / observedScoreRuns.length,
+      )
+    : null;
+  const customerSummary =
+    data.projects.length === 0
+      ? "Connect your first GitHub repository to build a system model and approve an execution environment."
+      : data.runs.length === 0
+        ? `${data.projects.length} ${data.projects.length === 1 ? "repository is" : "repositories are"} connected. Review the model, environment, and critical journeys before the first run.`
+        : `${data.runs.length} ${data.runs.length === 1 ? "simulation is" : "simulations are"} recorded, including ${observedRuns} with verified observed evidence.`;
   const usagePercent = Math.min(
     100,
     Math.round(
@@ -882,12 +988,8 @@ export default function Dashboard() {
           </div>
           <button
             className="user-chip"
-            onClick={
-              data.operatorAccess
-                ? () => (location.href = "/operator")
-                : undefined
-            }
-            title={data.operatorAccess ? "Open operator console" : undefined}
+            onClick={() => data.operatorAccess ? (location.href = "/operator") : setTab("settings")}
+            title={data.operatorAccess ? "Open operator console" : "Open account settings"}
           >
             <span>{data.user.displayName.slice(0, 2).toUpperCase()}</span>
             <div>
@@ -906,10 +1008,10 @@ export default function Dashboard() {
             <strong>{navItems.find((item) => item.id === tab)?.label}</strong>
           </div>
           <div>
-            <button className="icon-button" aria-label="Help">
+            <button className="icon-button" aria-label="Help" onClick={() => setTab("support")}>
               ?
             </button>
-            <button className="icon-button" aria-label="Notifications">
+            <button className="icon-button" aria-label="Notifications" onClick={() => setNotice("You have no unread workspace notifications.")}>
               ♢<i />
             </button>
             <button
@@ -955,24 +1057,24 @@ export default function Dashboard() {
             <>
               <section className="welcome-row">
                 <div>
-                  <span>MONDAY, JULY 13</span>
-                  <h1>Good evening, {data.user.displayName}.</h1>
+                  <span>{dashboardDateLabel()}</span>
+                  <h1>{greetingLabel()}, {data.user.displayName}.</h1>
                   <p>
                     {data.workspace.workspace_mode === "sample"
                       ? "Explore the prepared Northstar example, then create a clean workspace for real repository evidence."
-                      : "Your software twins ran three resilience experiments this week. One verified repair is ready for review."}
+                      : customerSummary}
                   </p>
                 </div>
-                <button onClick={() => (location.href = "/")}>
-                  Run a simulation <b>→</b>
+                <button onClick={() => setTab(data.projects.length ? "projects" : "integrations")}>
+                  {data.projects.length ? "Open projects" : "Connect GitHub"} <b>→</b>
                 </button>
               </section>
               <section className="saas-kpis">
                 <Kpi
-                  label="AVERAGE RESILIENCE"
-                  value="82"
-                  suffix="/100"
-                  note="↑ 12 this month"
+                  label="OBSERVED RESILIENCE"
+                  value={observedAverage === null ? "—" : String(observedAverage)}
+                  suffix={observedAverage === null ? undefined : "/100"}
+                  note={observedAverage === null ? "No observed baseline yet" : `${observedScoreRuns.length} verified observed ${observedScoreRuns.length === 1 ? "run" : "runs"}`}
                 />
                 <Kpi
                   label="SIMULATION RUNS"
@@ -980,7 +1082,7 @@ export default function Dashboard() {
                   note="Persisted evidence"
                 />
                 <Kpi
-                  label="OBSERVED REPAIRS"
+                  label="OBSERVED RUNS"
                   value={String(observedRuns)}
                   note={`${verifiedRuns - observedRuns} modeled replays`}
                 />
@@ -1030,7 +1132,7 @@ export default function Dashboard() {
                           {!step.complete && (
                             <button onClick={() => {
                               if (step.key === "repository") setTab("integrations");
-                              if (step.key === "simulation" || step.key === "verification") location.href = "/";
+                              if (step.key === "simulation" || step.key === "verification") setTab(data.projects.length ? "projects" : "integrations");
                               if (step.key === "team") setTab("team");
                             }}>Start →</button>
                           )}
@@ -1107,6 +1209,11 @@ export default function Dashboard() {
                         <dd>{project.branch}</dd>
                       </div>
                     </dl>
+                    {project.source_kind !== "sample" && (
+                      <button onClick={() => (location.href = `/projects/${encodeURIComponent(project.id)}`)}>
+                        Open software twin →
+                      </button>
+                    )}
                     {project.source_kind === "sample" ? (
                       <button onClick={() => (location.href = "/")}>Open prepared software twin →</button>
                     ) : mappedNodes(project).length ? (
@@ -1163,7 +1270,11 @@ export default function Dashboard() {
                 title="Run history"
                 description="Every run preserves its scenario, seed, environment, telemetry, and journey evidence."
                 action="New simulation"
-                onAction={() => (location.href = "/")}
+                onAction={() => {
+                  const project = data.projects.find((item) => item.source_kind !== "sample");
+                  if (project) location.href = `/projects/${encodeURIComponent(project.id)}`;
+                  else setTab("projects");
+                }}
               />
               <section className="saas-card full-table">
                 <RunTable runs={data.runs} />
@@ -1437,99 +1548,54 @@ export default function Dashboard() {
                 description="Install least-privilege providers once, then import repositories and publish verified work from the workspace."
               />
               <section className="integration-grid">
-                <article className="saas-card integration-card">
+                <article className="saas-card integration-card composio-card">
                   <header>
                     <i>⌘</i>
                     <div>
-                      <h3>GitHub App</h3>
-                      <p>
-                        Repository metadata, contents, checks, and draft pull
-                        requests.
-                      </p>
+                      <h3>GitHub via Composio</h3>
+                      <p>Hosted OAuth, repository discovery, immutable commit mapping, and approved draft PR access.</p>
                     </div>
-                    <span
-                      className={
-                        data.githubInstallations.length
-                          ? "connected"
-                          : "available"
-                      }
-                    >
-                      {data.githubInstallations.length
-                        ? "Connected"
-                        : data.configuration.github.configured
-                          ? "Ready"
-                          : "Setup required"}
+                    <span className={data.composioConnections.some((connection) => connection.status === "active") ? "connected" : "available"}>
+                      {data.composioConnections.some((connection) => connection.status === "active") ? "Connected" : data.configuration.composio.githubConfigured ? "Ready" : "Platform setup"}
                     </span>
                   </header>
-                  {data.githubInstallations.length ? (
+                  {data.composioConnections.some((connection) => connection.status === "active") ? (
                     <>
                       <div className="integration-account">
-                        <b>{data.githubInstallations[0].account_login}</b>
-                        <small>
-                          {data.githubInstallations[0].account_type} ·{" "}
-                          {data.githubRepositories.length} repositories
-                          synchronized
-                        </small>
+                        <b>{data.composioConnections.find((connection) => connection.status === "active")?.provider_login}</b>
+                        <small>{data.composioRepositories.length} repositories synchronized · OAuth hosted by Composio</small>
                       </div>
                       <div className="repository-picker">
-                        {data.githubRepositories
-                          .slice(0, 6)
-                          .map((repository) => (
-                            <div key={repository.repository_id}>
-                              <span>
-                                <b>{repository.full_name}</b>
-                                <small>
-                                  {repository.default_branch} ·{" "}
-                                  {repository.is_private ? "private" : "public"}
-                                </small>
-                              </span>
-                              {repository.selected ? (
-                                <button
-                                  disabled={creating}
-                                  onClick={() => importRepository(repository.repository_id)}
-                                >
-                                  {data.projects.some((project) => project.repository.toLowerCase() === repository.full_name.toLowerCase() && project.scanned_at) ? "Refresh map" : "Map repository"}
-                                </button>
-                              ) : (
-                                <button
-                                  disabled={creating}
-                                  onClick={() =>
-                                    importRepository(repository.repository_id)
-                                  }
-                                >
-                                  Create twin
-                                </button>
-                              )}
-                            </div>
-                          ))}
+                        {data.composioRepositories.slice(0, 8).map((repository) => (
+                          <div key={repository.id}>
+                            <span>
+                              <b>{repository.full_name}</b>
+                              <small>{repository.default_branch} · {repository.is_private ? "private" : "public"}</small>
+                            </span>
+                            <button disabled={creating} onClick={() => importComposioRepository(repository.id)}>
+                              {data.projects.some((project) => project.repository.toLowerCase() === repository.full_name.toLowerCase() && project.scanned_at) ? "Refresh twin" : "Create twin"}
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                      <button
-                        className="secondary-integration"
-                        onClick={() =>
-                          (location.href = "/api/integrations/github/start")
-                        }
-                      >
-                        Manage installation ↗
-                      </button>
+                      <div className="integration-actions">
+                        <button className="secondary-integration" disabled={creating} onClick={() => syncComposio(data.composioConnections.find((connection) => connection.status === "active")!.id)}>Sync repositories</button>
+                        <button className="secondary-integration" onClick={() => (location.href = "/api/integrations/composio/github/start")}>Connect another account ↗</button>
+                      </div>
                     </>
                   ) : (
                     <>
                       <ul>
-                        <li>✓ OAuth user ownership validation</li>
-                        <li>✓ Installation-scoped repository tokens</li>
-                        <li>✓ Explicit Contents + Pull requests write gate</li>
-                        <li>✓ No long-lived GitHub token stored</li>
+                        <li>✓ One-click Composio Connect Link</li>
+                        <li>✓ Credentials never pass through the browser</li>
+                        <li>✓ Workspace-bound, one-time OAuth state</li>
+                        <li>✓ Repositories verified before import</li>
                       </ul>
-                      <button
-                        disabled={!data.configuration.github.configured}
-                        onClick={() =>
-                          (location.href = "/api/integrations/github/start")
-                        }
-                      >
-                        {data.configuration.github.configured
-                          ? "Install GitHub App →"
-                          : "Awaiting app credentials"}
+                      <button disabled={!data.configuration.composio.githubConfigured} onClick={() => (location.href = "/api/integrations/composio/github/start")}>
+                        {data.configuration.composio.fixture ? "Connect test GitHub →" : "Connect GitHub →"}
                       </button>
+                      {!data.configuration.composio.githubConfigured && data.workspace.membership_role === "owner" && <button className="secondary-integration" onClick={() => (location.href = "/settings/providers")}>Configure Composio once →</button>}
+                      {!data.configuration.composio.githubConfigured && data.workspace.membership_role !== "owner" && <small>Ask a workspace owner to enable the platform GitHub connection.</small>}
                     </>
                   )}
                 </article>
@@ -1969,7 +2035,7 @@ export default function Dashboard() {
                   <span>
                     SIMULATION MINUTES ·{" "}
                     {new Date(data.entitlements.usagePeriodStart)
-                      .toLocaleDateString("en-US", { month: "long" })
+                      .toLocaleDateString("en-US", { month: "long", timeZone: "UTC" })
                       .toUpperCase()}
                   </span>
                   <div>
@@ -2279,6 +2345,11 @@ export default function Dashboard() {
                   />
                 </article>
                 <article className="saas-card data-controls">
+                  <h3>Provider credentials</h3>
+                  <p>Configure the GitHub App and project AI used by this local hackathon deployment. Production uses platform secrets.</p>
+                  <button onClick={() => (location.href = "/settings/providers")}>Open provider setup →</button>
+                </article>
+                <article className="saas-card data-controls">
                   <h3>Data portability</h3>
                   <p>
                     {data.workspace.membership_role === "owner" ||
@@ -2289,6 +2360,11 @@ export default function Dashboard() {
                   <button onClick={() => (location.href = "/api/data/export")}>
                     Download JSON export ↓
                   </button>
+                </article>
+                <article className="saas-card data-controls">
+                  <h3>Account session</h3>
+                  <p>Sign out of this browser and revoke the current WorldModel session.</p>
+                  <button disabled={creating} onClick={() => void signOut()}>Sign out</button>
                 </article>
                 <article className="saas-card data-controls danger-zone">
                   <h3>Workspace deletion review</h3>
@@ -2644,7 +2720,7 @@ function ProjectList({
           </div>
           <button
             aria-label={`Open ${project.name}`}
-            onClick={() => (location.href = "/")}
+            onClick={() => (location.href = `/projects/${encodeURIComponent(project.id)}`)}
           >
             →
           </button>
@@ -2791,7 +2867,7 @@ function Toggle({ title, note }: { title: string; note: string }) {
         <b>{title}</b>
         <small>{note}</small>
       </span>
-      <input type="checkbox" defaultChecked />
+      <input type="checkbox" checked disabled readOnly aria-label={`${title} is enforced`} />
     </label>
   );
 }

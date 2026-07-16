@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import "./invite.css";
 
 type Invitation = { workspaceName: string; role: string; expiresAt: string };
+type InvitationResult = { error?: string; invitation: Invitation };
 
 export default function InvitePage() {
   const token = useRef("");
@@ -18,7 +19,7 @@ export default function InvitePage() {
     token.current = value;
     if (!value) { Promise.resolve().then(() => setError("This invitation link is incomplete.")); return; }
     fetch(`/api/invitations/accept?token=${encodeURIComponent(value)}`, { cache: "no-store" })
-      .then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error || "Invitation unavailable"); return result.invitation; })
+      .then(async (response) => { const result = await response.json() as InvitationResult; if (!response.ok) throw new Error(result.error || "Invitation unavailable"); return result.invitation; })
       .then(setInvitation)
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Invitation unavailable"));
   }, []);
@@ -27,7 +28,7 @@ export default function InvitePage() {
     setAccepting(true); setError("");
     try {
       const response = await fetch("/api/invitations/accept", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: token.current }) });
-      const result = await response.json();
+      const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error || "Invitation could not be accepted");
       setAccepted(true);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Invitation could not be accepted"); }

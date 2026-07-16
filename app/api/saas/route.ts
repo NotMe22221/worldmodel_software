@@ -3,14 +3,7 @@ import { importGithubRepository } from "../../../db/business";
 import { createWorkspaceInvitation } from "../../../db/team";
 import { businessConfiguration, hasOperatorAccess } from "../../../server/runtime-config";
 import { launchReadiness } from "../../../server/readiness";
-
-function identity(request: Request) {
-  const email = request.headers.get("oai-authenticated-user-email");
-  if (email) return email;
-  const host = new URL(request.url).hostname;
-  if (host === "localhost" || host === "127.0.0.1") return "demo@worldmodel.dev";
-  return null;
-}
+import { requestIdentity, requestUser } from "../../../server/request-identity";
 
 function failure(error: unknown, fallback: string) {
   const message = error instanceof Error ? error.message : fallback;
@@ -19,19 +12,26 @@ function failure(error: unknown, fallback: string) {
 }
 
 export async function GET(request: Request) {
-  const email = identity(request);
-  if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const user = await requestUser(request);
+  if (!user) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const { email } = user;
   try {
     const snapshot = await getSaasSnapshot(email);
     const [configuration, operatorAccess] = await Promise.all([businessConfiguration(), hasOperatorAccess(email)]);
-    return Response.json({ ...snapshot, configuration, operatorAccess, readiness: launchReadiness({ ...snapshot, configuration }), user: { email, displayName: email.split("@")[0] } });
+    return Response.json({
+      ...snapshot,
+      configuration,
+      operatorAccess,
+      readiness: launchReadiness({ ...snapshot, configuration }),
+      user: { email, displayName: user.displayName },
+    });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load workspace" }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
-  const email = identity(request);
+  const email = await requestIdentity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   let payload: { action?: string; name?: string; repository?: string; branch?: string; email?: string; role?: string; scenario?: string; projectId?: string; runId?: string; repositoryId?: string; workspaceId?: string };
   try { payload = await request.json(); }

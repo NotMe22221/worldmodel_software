@@ -173,6 +173,50 @@ export const githubRepositories = sqliteTable("github_repositories", {
   syncedAt: text("synced_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const composioConnectionAttempts = sqliteTable("composio_connection_attempts", {
+  stateHash: text("state_hash").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  createdBy: text("created_by").notNull(),
+  composioUserId: text("composio_user_id").notNull(),
+  connectedAccountId: text("connected_account_id"),
+  authConfigId: text("auth_config_id").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  usedAt: text("used_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const composioConnections = sqliteTable("composio_connections", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  connectedAccountId: text("connected_account_id").notNull(),
+  composioUserId: text("composio_user_id").notNull(),
+  authConfigId: text("auth_config_id").notNull(),
+  toolkitSlug: text("toolkit_slug").notNull().default("github"),
+  providerLogin: text("provider_login").notNull(),
+  status: text("status").notNull().default("active"),
+  connectedBy: text("connected_by").notNull(),
+  lastSyncedAt: text("last_synced_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("composio_connections_workspace_account_idx").on(table.workspaceId, table.connectedAccountId),
+]);
+
+export const composioGithubRepositories = sqliteTable("composio_github_repositories", {
+  id: text("id").primaryKey(),
+  connectionId: text("connection_id").notNull().references(() => composioConnections.id),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  repositoryId: text("repository_id").notNull(),
+  fullName: text("full_name").notNull(),
+  defaultBranch: text("default_branch").notNull(),
+  isPrivate: integer("is_private", { mode: "boolean" }).notNull().default(true),
+  htmlUrl: text("html_url").notNull(),
+  selected: integer("selected", { mode: "boolean" }).notNull().default(false),
+  syncedAt: text("synced_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("composio_repositories_connection_repo_idx").on(table.connectionId, table.repositoryId),
+]);
+
 export const subscriptions = sqliteTable("subscriptions", {
   workspaceId: text("workspace_id").primaryKey().references(() => workspaces.id),
   stripeCustomerId: text("stripe_customer_id"),

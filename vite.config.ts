@@ -31,6 +31,17 @@ const localBindingConfig = {
         },
       ]
     : [],
+  durable_objects: {
+    bindings: [{ name: "RUN_EVENTS", class_name: "RunEventHub" }, { name: "Sandbox", class_name: "Sandbox" }],
+  },
+  migrations: [{ tag: "worldmodel-v1", new_sqlite_classes: ["RunEventHub"] }, { tag: "sandbox-v1", new_sqlite_classes: ["Sandbox"] }],
+  containers: [{ class_name: "Sandbox", image: "./Dockerfile.worldmodel", instance_type: "standard-1", max_instances: 20 }],
+  services: [{ binding: "SCAN_RUNNER", service: "worldmodel-for-software", entrypoint: "NativeSandboxRunner" }, { binding: "SANDBOX_RUNNER", service: "worldmodel-for-software", entrypoint: "NativeSandboxRunner" }],
+  workflows: [
+    { name: "worldmodel-scan", binding: "WORLDMODEL_SCAN", class_name: "WorldModelScanWorkflow" },
+    { name: "worldmodel-campaign", binding: "WORLDMODEL_CAMPAIGN", class_name: "WorldModelCampaignWorkflow" },
+    { name: "worldmodel-repair", binding: "WORLDMODEL_REPAIR", class_name: "WorldModelRepairWorkflow" },
+  ],
 };
 
 export default defineConfig(async () => {
@@ -52,7 +63,7 @@ export default defineConfig(async () => {
       sites(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        config: localBindingConfig,
+        config: localBindingConfig as never,
       }),
     ],
   };

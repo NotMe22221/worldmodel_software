@@ -1,5 +1,5 @@
 import { ApiAccessError, authenticateApiRequest, listApiRuns } from "@/db/developer-api";
-import { createSimulationRunForWorkspace, ingestObservedRunForWorkspace, verifySimulationRunForWorkspace } from "@/db/saas";
+import { createSimulationRunForWorkspace, ingestObservedRunForWorkspace, verifySimulationRunForWorkspace, type ObservedRunInput } from "@/db/saas";
 import { normalizeObservedRun } from "@/worldmodel/observed-run.mjs";
 
 function apiFailure(error: unknown, headers: Record<string, string> = {}) {
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
       const run = await ingestObservedRunForWorkspace(
         context.workspaceId,
         context.actor,
-        normalizeObservedRun(payload),
+        normalizeObservedRun(payload) as ObservedRunInput,
       );
       return Response.json({ data: run }, { status: 201, headers: { ...context.rateHeaders, location: `/api/v1/runs?id=${encodeURIComponent(String((run as { id?: string })?.id || ""))}` } });
     }

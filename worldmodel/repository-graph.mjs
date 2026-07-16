@@ -53,6 +53,7 @@ export function buildRepositoryGraph(entries, metadata = {}) {
     source: "github_tree",
     repository: metadata.repository || null,
     branch: metadata.branch || null,
+    commitSha: metadata.commitSha || null,
     scannedPathCount: paths.length,
     truncated: Boolean(metadata.truncated),
     nodes,
