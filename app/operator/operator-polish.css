@@ -1,0 +1,12 @@
+/* Operational data stays dense without becoming illegible. */
+.operator-shell :is(p,small,label,li){font-size:11px;line-height:1.5}
+.operator-shell :is(button,input,select,textarea){font-size:12px}
+.operator-shell>header b,.operator-panel>header b,.tenant-table b,.operator-case summary b{font-size:12px}
+.operator-shell>header nav a,.operator-shell>header nav span{font-size:11px}
+.operator-title>span,.operator-metrics span,.operator-panel>header span,.case-detail section>span{font-size:10px}
+.operator-title p,.case-detail section>p{font-size:12px}
+.operator-table .table-head,.tenant-table article,.operator-case summary{font-size:11px}
+.tenant-table small,.operator-case summary small{font-size:10px}
+.case-priority{font-size:9px}
+.operator-notice,.operator-error{font-size:11px}
+@media(max-width:520px){.operator-shell>header nav a{font-size:10px}.operator-content{padding-top:34px}}

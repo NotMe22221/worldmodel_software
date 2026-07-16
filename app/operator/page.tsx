@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import "./operator.css";
 import "./activation.css";
+import "./operator-polish.css";
 
 type Totals = {
   workspaces: number;

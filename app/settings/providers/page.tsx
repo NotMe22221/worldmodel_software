@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { type FormEvent, useEffect, useState } from "react";
+import "../../auth.css";
+import "./provider.css";
 
 type Configuration = {
   composio?: { configured?: boolean; githubConfigured?: boolean; fixture?: boolean };

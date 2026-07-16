@@ -1,0 +1,23 @@
+/* Readable enterprise scale for project operations and evidence. */
+.project-shell :is(p,li,label,small){font-size:11px;line-height:1.55}
+.project-shell :is(button,input,select,textarea){font-size:12px}
+.project-sidebar nav button,.back-workspace{font-size:11px}
+.project-identity b,.project-sidebar-foot b{font-size:12px}
+.project-identity small,.project-sidebar-foot small{font-size:10px}
+.project-sidebar-foot span,.page-head>div>span,.project-hero>div>span,.activation-panel header span,.truth-panel>div>span{font-size:10px}
+.page-head p,.project-hero p,.truth-panel p{font-size:12px}
+.project-alert{font-size:11px}
+.project-metrics span,.model-summary span,.backend-cards span,.environment-form>label>span{font-size:10px}
+.project-metrics small,.activation-panel li small,.backend-cards small{font-size:10px}
+.activation-panel li b,.sticky-action b,.journey-grid li b{font-size:11px}
+.truth-panel li,.journey-form label,.journey-grid header,.journey-grid p{font-size:11px}
+.evidence-list>span,.assistant-layout>aside>span,.campaign-list header>div:first-child span,.live-replay>header span,.candidate-grid span,.decision-report>span{font-size:10px}
+.evidence-list b,.model-canvas article b{font-size:10px}
+.evidence-list code,.evidence-list small,.model-canvas article small{font-size:9px}
+.assistant-message b,.assistant-message p,.assistant-layout>aside li{font-size:11px}
+.campaign-list header p,.campaign-facts,.scenario-chips span,.campaign-list footer p{font-size:11px}
+.run-table>header,.run-table>article,.live-replay>div>article{font-size:11px}
+.run-table>header{font-size:10px}
+.live-replay>header b,.live-replay>header strong,.live-replay>p{font-size:11px}
+.candidate-grid small,.decision-report p,.decision-report code{font-size:10px}
+@media(max-width:700px){.project-shell :is(input,select,textarea){font-size:16px}.run-table{overflow-x:auto}.run-table>header,.run-table>article{min-width:720px}.candidate-grid{grid-template-columns:1fr}}

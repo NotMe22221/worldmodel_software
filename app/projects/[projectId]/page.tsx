@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import "./project.css";
 import "./project-controls.css";
+import "./project-polish.css";
 
 type Row = Record<string, unknown>;
 type ExecutionReadiness = { ready: boolean; backend: string; code: string; message: string; missing: string[] };
