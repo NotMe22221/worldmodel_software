@@ -65,6 +65,13 @@ Open the URL printed by the dev server and create an account. New accounts begin
 
 Validate with `npm test`, `npm run lint`, and `npm run typecheck:worker`.
 
+## Vercel deployment
+
+Vercel uses the native Next.js build and a server-only Cloudflare D1 REST
+adapter; it never uses temporary function storage for customer data. Follow
+the required storage, environment, callback, execution-boundary, and smoke-test
+steps in [`docs/VERCEL.md`](docs/VERCEL.md) before promoting a deployment.
+
 ## Production integrations
 
 Copy the keys from `.env.example` into the production environment rather than committing secrets. Configure the GitHub App setup URL as `/api/integrations/github/setup` and its OAuth callback as `/api/integrations/github/callback`. Grant repository **Contents: write** and **Pull requests: write** only if verified draft-PR publication is enabled. GitHub Actions callbacks exchange a repository/branch-bound OIDC assertion at `/api/v1/runner/token`; evidence is accepted once at `/api/v1/runner/evidence` with an expiring token.
