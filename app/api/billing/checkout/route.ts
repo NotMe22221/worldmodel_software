@@ -13,7 +13,7 @@ export async function POST(request: Request) {
   try {
     const context = await billingContext(email);
     const url = await createStripeCheckout({ plan: payload.plan, workspaceId: context.workspaceId, email, origin: await publicRequestOrigin(request), customerId: context.customerId });
-    return Response.json({ url });
+    return Response.json({ url }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Checkout could not be created";
     return Response.json({ error: message }, { status: message.includes("role") ? 403 : message.includes("configured") ? 503 : 502 });

@@ -3,6 +3,10 @@ import { githubConfiguration } from "@/server/runtime-config";
 import { requestIdentity } from "@/server/request-identity";
 import { publicRequestOrigin } from "@/server/request-origin";
 
+function privateRedirect(target: URL) {
+  return new Response(null, { status: 302, headers: { location: target.toString(), "cache-control": "private, no-store" } });
+}
+
 export async function GET(request: Request) {
   const email = await requestIdentity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
@@ -18,7 +22,7 @@ export async function GET(request: Request) {
     authorization.searchParams.set("client_id", config.clientId);
     authorization.searchParams.set("state", state);
     authorization.searchParams.set("redirect_uri", new URL("/api/integrations/github/callback", origin).toString());
-    return Response.redirect(authorization);
+    return privateRedirect(authorization);
   } catch (error) {
     const message = error instanceof Error ? error.message : "GitHub installation could not be validated";
     return Response.json({ error: message }, { status: message.includes("state") ? 400 : message.includes("configured") ? 503 : 500 });

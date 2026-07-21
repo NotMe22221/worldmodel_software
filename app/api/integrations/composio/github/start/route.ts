@@ -3,7 +3,7 @@ import { requestIdentity } from "@/server/request-identity";
 import { publicRequestOrigin } from "@/server/request-origin";
 
 function redirect(target: URL, correlationId: string, status = 303) {
-  return new Response(null, { status, headers: { location: target.toString(), "x-correlation-id": correlationId } });
+  return new Response(null, { status, headers: { location: target.toString(), "x-correlation-id": correlationId, "cache-control": "private, no-store" } });
 }
 
 function startFailure(error: unknown) {

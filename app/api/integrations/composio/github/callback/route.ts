@@ -11,7 +11,7 @@ function dashboard(origin: string, status: string, correlationId: string) {
 }
 
 function redirect(target: URL, correlationId: string) {
-  return new Response(null, { status: 303, headers: { location: target.toString(), "x-correlation-id": correlationId } });
+  return new Response(null, { status: 303, headers: { location: target.toString(), "x-correlation-id": correlationId, "cache-control": "private, no-store" } });
 }
 
 function routeLog(level: "info" | "warn", event: string, correlationId: string, details: Record<string, string> = {}) {
