@@ -80,13 +80,15 @@ export default function ProviderSettingsPage() {
       </div>
       {mode === null && !error && <div className="provider-loading" role="status">Checking how this deployment manages provider credentials…</div>}
       {mode && !mode.editable && <section className="provider-deployment" aria-labelledby="deployment-provider-title">
-        <h2 id="deployment-provider-title">Managed in Vercel</h2>
-        <p>This deployed app intentionally does not accept provider secrets in the browser. A Vercel project administrator must add the variables below to the deployment environment, then redeploy.</p>
-        <ol>
-          <li><code>COMPOSIO_API_KEY</code><small>Least-privilege project API key from Composio.</small></li>
-          <li><code>COMPOSIO_GITHUB_AUTH_CONFIG_ID</code><small>The Composio auth config configured for GitHub.</small></li>
-          <li><code>WORLDMODEL_PUBLIC_ORIGIN</code><small>The canonical HTTPS URL for this app, used to build the OAuth callback.</small></li>
-        </ol>
+        <h2 id="deployment-provider-title">{configuration.composio?.configured ? "GitHub OAuth is configured" : "Finish setup in Vercel"}</h2>
+        {configuration.composio?.configured
+          ? <p>The required Composio credentials are present in this deployment. Rotate them only from the Vercel project environment.</p>
+          : <><p>This deployed app intentionally does not accept provider secrets in the browser. A Vercel project administrator must add the variables below, then redeploy.</p>
+            <ol>
+              <li><code>COMPOSIO_API_KEY</code><small>Least-privilege project API key from Composio.</small></li>
+              <li><code>COMPOSIO_GITHUB_AUTH_CONFIG_ID</code><small>The Composio auth config configured for GitHub.</small></li>
+            </ol></>}
+        <p>Keep “Automatically expose System Environment Variables” enabled so Vercel supplies the callback origin. Set <code>WORLDMODEL_PUBLIC_ORIGIN</code> only to select a different canonical HTTPS domain.</p>
         <p className="provider-safety">Never paste API keys into support messages, source control, or this page.</p>
         <div className="provider-actions">
           <a href="https://vercel.com/docs/projects/environment-variables" target="_blank" rel="noreferrer">Vercel environment variable guide ↗</a>

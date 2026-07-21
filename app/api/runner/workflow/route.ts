@@ -1,5 +1,6 @@
 import { getSaasSnapshot } from "@/db/saas";
 import { requestIdentity } from "@/server/request-identity";
+import { publicRequestOrigin } from "@/server/request-origin";
 import { generateRunnerWorkflow } from "@/worldmodel/runner-workflow.mjs";
 
 export async function GET(request: Request) {
@@ -20,7 +21,7 @@ export async function GET(request: Request) {
       );
     const workflow = generateRunnerWorkflow({
       projectId,
-      apiOrigin: url.origin,
+      apiOrigin: await publicRequestOrigin(request),
     });
     return new Response(workflow, {
       headers: {
@@ -32,7 +33,9 @@ export async function GET(request: Request) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to generate workflow";
-    const status = message.includes("not found")
+    const status = message.includes("not configured")
+      ? 503
+      : message.includes("not found")
       ? 404
       : message.includes("through GitHub")
         ? 409

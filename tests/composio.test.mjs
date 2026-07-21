@@ -105,6 +105,43 @@ test("local OAuth callbacks preserve the browser host so host-only sessions surv
   assert.equal(await publicRequestOrigin(new Request("http://localhost:3100/api/integrations/composio/github/start")), "http://localhost:3100");
 });
 
+test("production OAuth callbacks use Vercel's stable project URL instead of a request-derived host", async () => {
+  const { resolvePublicRequestOrigin } = await import("../server/request-origin.ts");
+  const request = new Request("https://untrusted-request-host.example/api/integrations/composio/github/start");
+  assert.equal(resolvePublicRequestOrigin(request, {
+    VERCEL: "1",
+    VERCEL_ENV: "production",
+    VERCEL_PROJECT_PRODUCTION_URL: "worldmodel-software.vercel.app",
+  }), "https://worldmodel-software.vercel.app");
+  assert.equal(resolvePublicRequestOrigin(request, {
+    VERCEL_RUNTIME: "true",
+    VERCEL_ENV: "production",
+    VERCEL_PROJECT_PRODUCTION_URL: "worldmodel-software.vercel.app",
+    WORLDMODEL_PUBLIC_ORIGIN: "https://worldmodel.example",
+  }), "https://worldmodel.example");
+});
+
+test("preview OAuth callbacks use the unique Vercel deployment URL", async () => {
+  const { resolvePublicRequestOrigin } = await import("../server/request-origin.ts");
+  const request = new Request("https://untrusted-request-host.example/api/integrations/composio/github/start");
+  assert.equal(resolvePublicRequestOrigin(request, {
+    VERCEL: "1",
+    VERCEL_ENV: "preview",
+    VERCEL_URL: "worldmodel-git-fix-example.vercel.app",
+    VERCEL_PROJECT_PRODUCTION_URL: "worldmodel-software.vercel.app",
+  }), "https://worldmodel-git-fix-example.vercel.app");
+});
+
+test("Vercel callbacks fail closed without a system URL and reject non-origin values", async () => {
+  const { resolvePublicRequestOrigin, vercelProjectProductionOrigin } = await import("../server/request-origin.ts");
+  const request = new Request("https://untrusted-request-host.example/api/integrations/composio/github/start");
+  assert.throws(() => resolvePublicRequestOrigin(request, { VERCEL: "1", VERCEL_ENV: "production" }), /not configured/);
+  assert.throws(() => resolvePublicRequestOrigin(request, { VERCEL: "1", VERCEL_ENV: "preview" }), /not configured/);
+  assert.throws(() => resolvePublicRequestOrigin(request, { VERCEL_RUNTIME: "true" }), /not configured/);
+  assert.throws(() => vercelProjectProductionOrigin("https://user:secret@example.com"), /not allowed/);
+  assert.throws(() => vercelProjectProductionOrigin("example.com/oauth/callback"), /not allowed/);
+});
+
 test("Composio rejects a redirect URL outside the hosted Connect origin", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => Response.json({ link_token: "lt_bad", redirect_url: "https://attacker.example/connect", expires_at: new Date(Date.now() + 60_000).toISOString(), connected_account_id: "ca_bad" }, { status: 201 });

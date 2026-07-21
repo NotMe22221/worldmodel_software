@@ -1,8 +1,9 @@
 import { completeComposioGithubConnection } from "@/db/composio";
 import { requestIdentity } from "@/server/request-identity";
+import { publicRequestOrigin } from "@/server/request-origin";
 
-function dashboard(request: Request, status: string, correlationId: string) {
-  const target = new URL("/dashboard", request.url);
+function dashboard(origin: string, status: string, correlationId: string) {
+  const target = new URL("/dashboard", origin);
   target.searchParams.set("tab", "integrations");
   target.searchParams.set("composio", status);
   target.searchParams.set("correlation", correlationId);
@@ -23,19 +24,26 @@ export async function GET(request: Request) {
   const correlationId = crypto.randomUUID();
   const email = await requestIdentity(request);
   const state = new URL(request.url).searchParams.get("state") || "";
+  let origin: string;
+  try {
+    origin = await publicRequestOrigin(request);
+  } catch {
+    routeLog("warn", "callback_rejected", correlationId, { code: "PUBLIC_ORIGIN_NOT_CONFIGURED" });
+    return Response.json({ error: "GitHub callback origin is not configured", correlationId }, { status: 503, headers: { "x-correlation-id": correlationId } });
+  }
   if (!/^[a-f0-9]{64}$/i.test(state)) {
     routeLog("warn", "callback_rejected", correlationId, { code: "INVALID_STATE" });
-    return redirect(dashboard(request, "invalid_state", correlationId), correlationId);
+    return redirect(dashboard(origin, "invalid_state", correlationId), correlationId);
   }
   try {
     routeLog("info", "callback_received", correlationId);
     await completeComposioGithubConnection(email, state, correlationId);
     routeLog("info", "callback_completed", correlationId);
-    if (!email) return redirect(new URL(`/login?returnTo=${encodeURIComponent(`/dashboard?tab=integrations&composio=connected&correlation=${correlationId}`)}`, request.url), correlationId);
-    return redirect(dashboard(request, "connected", correlationId), correlationId);
+    if (!email) return redirect(new URL(`/login?returnTo=${encodeURIComponent(`/dashboard?tab=integrations&composio=connected&correlation=${correlationId}`)}`, origin), correlationId);
+    return redirect(dashboard(origin, "connected", correlationId), correlationId);
   } catch {
     routeLog("warn", "callback_failed", correlationId, { code: "COMPOSIO_CALLBACK_FAILED" });
-    if (!email) return redirect(new URL(`/login?returnTo=${encodeURIComponent(`/dashboard?tab=integrations&composio=error&correlation=${correlationId}`)}`, request.url), correlationId);
-    return redirect(dashboard(request, "error", correlationId), correlationId);
+    if (!email) return redirect(new URL(`/login?returnTo=${encodeURIComponent(`/dashboard?tab=integrations&composio=error&correlation=${correlationId}`)}`, origin), correlationId);
+    return redirect(dashboard(origin, "error", correlationId), correlationId);
   }
 }

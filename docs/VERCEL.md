@@ -33,9 +33,13 @@ before it was added to the Drizzle journal.
 
 ## Application configuration
 
-Set `WORLDMODEL_PUBLIC_ORIGIN` to the canonical `https://` production domain.
-Until it is set, request-derived origins are used and the build emits a warning.
-Then add the provider secrets needed for the features you intend to enable:
+Enable **Automatically expose System Environment Variables** in the Vercel
+project settings. WorldModel uses the resulting
+`VERCEL_PROJECT_PRODUCTION_URL` in Production and `VERCEL_URL` in Preview as
+the canonical OAuth, billing, and runner origin. The deployment preflight fails
+closed when those variables are unavailable. Set `WORLDMODEL_PUBLIC_ORIGIN`
+only to select a different canonical `https://` domain. Then add the provider
+secrets needed for the features you intend to enable:
 
 - Composio: `COMPOSIO_API_KEY`, `COMPOSIO_GITHUB_AUTH_CONFIG_ID`
 - OpenAI: `OPENAI_API_KEY`, optionally `OPENAI_AGENT_MODEL`
@@ -63,8 +67,12 @@ Before deploying:
 ```text
 npm run lint
 npm run test:unit
-npm run build:vercel
+npm run build:local
 ```
+
+Vercel itself runs `npm run build:vercel`; that command includes the
+deployment-only environment preflight and intentionally fails in a normal local
+shell where Vercel system variables are absent.
 
 After deployment, verify `/`, `/login`, and `/signup`. Then request
 `/api/health`; it must return HTTP 200 with `{"status":"ok","storage":"durable"}`.

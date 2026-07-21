@@ -1,6 +1,7 @@
 import { attachGithubInstallation } from "@/db/business";
 import { githubConfiguration } from "@/server/runtime-config";
 import { requestIdentity } from "@/server/request-identity";
+import { publicRequestOrigin } from "@/server/request-origin";
 
 export async function GET(request: Request) {
   const email = await requestIdentity(request);
@@ -10,12 +11,13 @@ export async function GET(request: Request) {
   const installationId = url.searchParams.get("installation_id");
   if (!state || !installationId || !/^\d+$/.test(installationId)) return Response.json({ error: "GitHub returned an incomplete installation" }, { status: 400 });
   try {
+    const origin = await publicRequestOrigin(request);
     const config = await githubConfiguration();
     await attachGithubInstallation(email, state, installationId);
     const authorization = new URL("https://github.com/login/oauth/authorize");
     authorization.searchParams.set("client_id", config.clientId);
     authorization.searchParams.set("state", state);
-    authorization.searchParams.set("redirect_uri", new URL("/api/integrations/github/callback", request.url).toString());
+    authorization.searchParams.set("redirect_uri", new URL("/api/integrations/github/callback", origin).toString());
     return Response.redirect(authorization);
   } catch (error) {
     const message = error instanceof Error ? error.message : "GitHub installation could not be validated";

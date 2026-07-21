@@ -45,6 +45,17 @@ test("Vercel runtime fails closed when durable storage is missing", () => {
   assert.throws(() => vercelRuntimeEnv({ VERCEL: "1" }), /VERCEL_STORAGE_NOT_CONFIGURED/);
 });
 
+test("Vercel build preflight requires exposed system environment variables", () => {
+  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, VERCEL: "", VERCEL_ENV: "", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "never-print-this", WORLDMODEL_PUBLIC_ORIGIN: "https://worldmodel.example" },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Automatically expose System Environment Variables/);
+  assert.doesNotMatch(result.stderr, /never-print-this/);
+});
+
 test("Vercel runtime maps SQLite statements, batches, and artifacts to Turso", async () => {
   const mock = mockLibsql();
   const env = vercelRuntimeEnv({ VERCEL: "1", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret" }, mock.factory);
@@ -122,10 +133,11 @@ test("Vercel preview build preflight warns instead of masking its configuration 
   const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "preview", TURSO_DATABASE_URL: "", TURSO_AUTH_TOKEN: "never-print-this" },
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "preview", VERCEL_URL: "worldmodel-preview.vercel.app", TURSO_DATABASE_URL: "", TURSO_AUTH_TOKEN: "never-print-this", WORLDMODEL_PUBLIC_ORIGIN: "" },
   });
   assert.equal(result.status, 0);
   assert.match(result.stderr, /Preview data-backed routes/i);
+  assert.match(result.stdout, /canonical deployment origin detected/);
   assert.doesNotMatch(result.stderr, /never-print-this/);
 });
 
@@ -133,10 +145,51 @@ test("Vercel build preflight accepts complete production Turso configuration", (
   const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret", WORLDMODEL_PUBLIC_ORIGIN: "https://worldmodel.example" },
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret", WORLDMODEL_PUBLIC_ORIGIN: "https://worldmodel.example", VERCEL_PROJECT_PRODUCTION_URL: "" },
   });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /storage preflight passed/);
+  assert.match(result.stdout, /deployment origin override detected/);
+});
+
+test("Vercel build preflight accepts its automatic canonical production URL", () => {
+  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret", WORLDMODEL_PUBLIC_ORIGIN: "", VERCEL_PROJECT_PRODUCTION_URL: "worldmodel-software.vercel.app" },
+  });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Vercel canonical deployment origin detected/);
+  assert.doesNotMatch(result.stderr, /No canonical deployment origin/);
+});
+
+test("Vercel build preflight rejects an invalid production origin without printing it", () => {
+  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret", WORLDMODEL_PUBLIC_ORIGIN: "https://user:never-print-this@", VERCEL_PROJECT_PRODUCTION_URL: "" },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /canonical HTTPS origin/);
+  assert.doesNotMatch(result.stderr, /never-print-this/);
+});
+
+test("Vercel build preflight validates preview overrides and requires a system URL", () => {
+  const invalid = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "preview", VERCEL_URL: "worldmodel-preview.vercel.app", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret", WORLDMODEL_PUBLIC_ORIGIN: "https://preview.example/oauth/callback" },
+  });
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /canonical HTTPS origin/);
+
+  const missing = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "preview", VERCEL_URL: "", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret", WORLDMODEL_PUBLIC_ORIGIN: "", VERCEL_PROJECT_PRODUCTION_URL: "" },
+  });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /No canonical deployment origin/);
 });
 
 test("Vercel build preflight rejects local-only runtime flags", () => {

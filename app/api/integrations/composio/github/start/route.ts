@@ -22,22 +22,29 @@ function routeLog(level: "info" | "warn", event: string, correlationId: string, 
 export async function GET(request: Request) {
   const correlationId = crypto.randomUUID();
   const email = await requestIdentity(request);
+  let origin: string;
+  try {
+    origin = await publicRequestOrigin(request);
+  } catch {
+    routeLog("warn", "start_failed", correlationId, { code: "PUBLIC_ORIGIN_NOT_CONFIGURED", status: 503, retriable: false });
+    return Response.json({ error: { message: "GitHub connection is not configured for this deployment.", code: "COMPOSIO_NOT_CONFIGURED", retriable: false, correlationId } }, { status: 503, headers: { "x-correlation-id": correlationId } });
+  }
   if (!email) {
     routeLog("info", "start_auth_required", correlationId);
-    return redirect(new URL(`/login?returnTo=${encodeURIComponent("/dashboard?tab=integrations")}`, request.url), correlationId);
+    return redirect(new URL(`/login?returnTo=${encodeURIComponent("/dashboard?tab=integrations")}`, origin), correlationId);
   }
   try {
     routeLog("info", "start_requested", correlationId);
     const recovered = await recoverComposioGithubConnection(email, correlationId);
     if (recovered) {
-      const target = new URL("/dashboard", request.url);
+      const target = new URL("/dashboard", origin);
       target.searchParams.set("tab", "integrations");
       target.searchParams.set("composio", "connected");
       target.searchParams.set("correlation", correlationId);
       routeLog("info", "start_recovered", correlationId);
       return redirect(target, correlationId);
     }
-    const callbackUrl = new URL("/api/integrations/composio/github/callback", await publicRequestOrigin(request)).toString();
+    const callbackUrl = new URL("/api/integrations/composio/github/callback", origin).toString();
     const connection = await beginComposioGithubConnection(email, callbackUrl, correlationId);
     routeLog("info", "start_redirected", correlationId);
     return redirect(new URL(connection.redirectUrl), correlationId);
@@ -45,7 +52,7 @@ export async function GET(request: Request) {
     const failure = startFailure(error);
     routeLog("warn", "start_failed", correlationId, { code: failure.code, status: failure.status, retriable: failure.retriable });
     if (!(request.headers.get("accept") || "").includes("application/json")) {
-      const target = new URL("/dashboard", request.url);
+      const target = new URL("/dashboard", origin);
       target.searchParams.set("tab", "integrations");
       target.searchParams.set("composio", "start_error");
       target.searchParams.set("correlation", correlationId);

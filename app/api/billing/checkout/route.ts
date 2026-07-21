@@ -1,5 +1,6 @@
 import { billingContext } from "@/db/business";
 import { requestIdentity } from "@/server/request-identity";
+import { publicRequestOrigin } from "@/server/request-origin";
 import { createStripeCheckout } from "@/server/stripe";
 
 export async function POST(request: Request) {
@@ -11,7 +12,7 @@ export async function POST(request: Request) {
   if (payload.plan !== "starter" && payload.plan !== "pro") return Response.json({ error: "Choose Starter or Pro" }, { status: 400 });
   try {
     const context = await billingContext(email);
-    const url = await createStripeCheckout({ plan: payload.plan, workspaceId: context.workspaceId, email, origin: new URL(request.url).origin, customerId: context.customerId });
+    const url = await createStripeCheckout({ plan: payload.plan, workspaceId: context.workspaceId, email, origin: await publicRequestOrigin(request), customerId: context.customerId });
     return Response.json({ url });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Checkout could not be created";

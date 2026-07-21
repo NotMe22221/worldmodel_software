@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
+import { vercelSystemDeploymentOrigin } from "@/server/request-origin";
 import "./globals.css";
 import "./warm-theme.css";
 import "./premium.css";
 
-const publicOrigin = process.env.WORLDMODEL_PUBLIC_ORIGIN || "https://worldmodel-software.vercel.app";
+const publicOrigin = process.env.WORLDMODEL_PUBLIC_ORIGIN?.trim()
+  || vercelSystemDeploymentOrigin(process.env)
+  || "https://worldmodel-software.vercel.app";
 
 export const metadata: Metadata = {
   metadataBase: new URL(publicOrigin),

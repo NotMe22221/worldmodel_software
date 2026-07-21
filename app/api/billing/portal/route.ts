@@ -1,20 +1,21 @@
 import { recordAudit } from "@/db/audit";
 import { billingContext } from "@/db/business";
 import { requestIdentity } from "@/server/request-identity";
+import { publicRequestOrigin } from "@/server/request-origin";
 import { createStripePortal } from "@/server/stripe";
 
 export async function POST(request: Request) {
   const email = await requestIdentity(request);
   if (!email)
     return Response.json({ error: "Authentication required" }, { status: 401 });
-  const requestOrigin = new URL(request.url).origin;
   const browserOrigin = request.headers.get("origin");
-  if (browserOrigin && browserOrigin !== requestOrigin)
+  if (browserOrigin && browserOrigin !== new URL(request.url).origin)
     return Response.json(
       { error: "Cross-origin billing requests are not allowed" },
       { status: 403 },
     );
   try {
+    const requestOrigin = await publicRequestOrigin(request);
     const context = await billingContext(email);
     if (!context.customerId)
       return Response.json(
