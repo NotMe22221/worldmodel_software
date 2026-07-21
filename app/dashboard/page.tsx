@@ -431,6 +431,8 @@ export default function Dashboard() {
     ? `Composio could not verify the GitHub connection. Start a new connection and try again.${supportReference}`
     : composioResult === "start_error"
       ? `GitHub connection could not start. Your existing workspace is safe; try again or contact support.${supportReference}`
+      : composioResult === "unavailable"
+        ? `GitHub connection is temporarily unavailable while the platform operator completes setup. You do not need to provide provider credentials.${supportReference}`
       : composioResult === "invalid_state"
         ? `The GitHub connection link was invalid or expired. Start again from Integrations.${supportReference}`
         : "";
@@ -1810,15 +1812,17 @@ export default function Dashboard() {
                       )}
                       {!data.configuration.composio.githubConfigured && (
                         <div className="integration-setup-note">
-                          <b>Deployment setup required</b>
-                          <small>The app is deployed from GitHub, but runtime repository access needs a Composio API key and GitHub auth configuration in Vercel.</small>
-                          {data.configuration.composio.missing.length > 0 && (
+                          <b>{data.operatorAccess ? "Deployment setup required" : "One-click GitHub connection is being enabled"}</b>
+                          <small>{data.operatorAccess
+                            ? "Configure the platform-owned Composio integration once. Workspace users will never provide Composio credentials."
+                            : "You will not need a Composio account or API key. Once the platform integration is ready, this becomes a single GitHub authorization click."}</small>
+                          {data.operatorAccess && data.configuration.composio.missing.length > 0 && (
                             <small>Missing now: <code>{data.configuration.composio.missing.join(", ")}</code></small>
                           )}
-                          {canAdminWorkspace ? (
+                          {data.operatorAccess ? (
                             <a className="secondary-integration" href="/settings/providers">View platform setup instructions →</a>
                           ) : (
-                            <small>Ask a workspace owner or administrator to finish the deployment setup.</small>
+                            <button className="secondary-integration" disabled>Connect GitHub →</button>
                           )}
                         </div>
                       )}

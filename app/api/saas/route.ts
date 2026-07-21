@@ -21,9 +21,12 @@ export async function GET(request: Request) {
   try {
     const snapshot = await getSaasSnapshot(email);
     const [configuration, operatorAccess] = await Promise.all([businessConfiguration(), hasOperatorAccess(email, user.id)]);
+    const visibleConfiguration = operatorAccess
+      ? configuration
+      : { ...configuration, composio: { ...configuration.composio, missing: [] } };
     return Response.json({
       ...snapshot,
-      configuration,
+      configuration: visibleConfiguration,
       operatorAccess,
       readiness: launchReadiness({ ...snapshot, configuration }),
       user: { email, displayName: user.displayName },

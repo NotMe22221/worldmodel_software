@@ -654,7 +654,7 @@ test("commercial launch gate is derived from live state and owner attestations",
   assert.equal(baseline.ready, false);
   assert.match(
     baseline.checks.find((check) => check.key === "github_live").evidence,
-    /credentials are missing/,
+    /workspace users do not provide provider credentials/,
   );
   for (const runs of [
     [{ status: "verified", evidence_kind: "modeled" }],

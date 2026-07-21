@@ -54,7 +54,7 @@ export async function GET(request: Request) {
     if (!(request.headers.get("accept") || "").includes("application/json")) {
       const target = new URL("/dashboard", origin);
       target.searchParams.set("tab", "integrations");
-      target.searchParams.set("composio", "start_error");
+      target.searchParams.set("composio", failure.code === "COMPOSIO_NOT_CONFIGURED" ? "unavailable" : "start_error");
       target.searchParams.set("correlation", correlationId);
       return redirect(target, correlationId);
     }

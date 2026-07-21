@@ -63,6 +63,25 @@ test("campaign approval exposes every immutable scenario and replay controls sel
   assert.match(replay, /aria-current=\{index === selectedPosition \? "step"/);
   assert.doesNotMatch(replay, /readOnly/);
 });
+test("GitHub connection stays one-click for workspace users while provider setup stays operator-only", async () => {
+  const dashboard = await readFile(new URL("../app/dashboard/page.tsx", import.meta.url), "utf8");
+  const saasRoute = await readFile(new URL("../app/api/saas/route.ts", import.meta.url), "utf8");
+  const providerRoute = await readFile(new URL("../app/api/provider-settings/route.ts", import.meta.url), "utf8");
+  const providerLayout = await readFile(new URL("../app/settings/layout.tsx", import.meta.url), "utf8");
+  const composioStart = await readFile(new URL("../app/api/integrations/composio/github/start/route.ts", import.meta.url), "utf8");
+  const readiness = await readFile(new URL("../server/readiness.ts", import.meta.url), "utf8");
+
+  assert.match(dashboard, /You will not need a Composio account or API key/);
+  assert.match(dashboard, /data\.operatorAccess \? \([\s\S]*View platform setup instructions/);
+  assert.match(dashboard, /<button className="secondary-integration" disabled>Connect GitHub/);
+  assert.match(saasRoute, /operatorAccess[\s\S]*missing: \[\]/);
+  assert.match(providerRoute, /Platform operator access required/);
+  assert.match(providerLayout, /mode\.editable && !localOwner/);
+  assert.match(providerLayout, /!mode\.editable && !operatorAccess/);
+  assert.match(composioStart, /COMPOSIO_NOT_CONFIGURED" \? "unavailable" : "start_error"/);
+  assert.match(readiness, /workspace users do not provide provider credentials/);
+  assert.doesNotMatch(readiness, /Composio GitHub OAuth credentials are missing/);
+});
 test("rejects service path traversal and unknown dependency targets", () => {
   assert.throws(() => validateManifest({ ...manifest, services: [{ ...manifest.services[0], root: "../outside" }] }), /unsafe startup/);
   assert.throws(() => validateManifest({ ...manifest, services: [{ ...manifest.services[0], dependsOn: ["missing"] }] }), /invalid dependencies/);
