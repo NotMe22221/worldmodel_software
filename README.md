@@ -16,6 +16,26 @@ Customer metrics are labeled observed only after a configured runner submits a m
 
 Every approved execution manifest must define a safe `observeCommand`. The runner sets `WORLDMODEL_EXECUTION_SPEC` to a protected JSON file containing the full immutable execution descriptor; the command must read its `.scenario` value and write the completed evidence payload to `.worldmodel/observed-run.json`. Existing approved environment revisions without `observeCommand` are intentionally rejected and must be replaced with a newly reviewed and approved revision.
 
+## Judge quick start
+
+The hosted demo is available at [worldmodel-software.vercel.app](https://worldmodel-software.vercel.app). Judges can test the primary repository-onboarding path without rebuilding the project:
+
+1. Create a workspace or sign in.
+2. Open **Integrations** and choose **Connect GitHub**.
+3. Approve the hosted GitHub consent screen. Users do not enter Composio credentials; the platform owns that configuration.
+4. Select a repository and import it. WorldModel records an immutable commit and builds the reviewable project model.
+5. Open the imported project to inspect the model, environment manifest, bounded scenarios, verification evidence, and approval gates.
+
+The product is a web application tested on current desktop browsers. Self-hosting requires Node.js 24, a Turso/libSQL database, and Vercel-compatible server functions. Composio is required for the one-click GitHub flow. OpenAI and runner credentials enable the corresponding AI and observed-execution features. No Cloudflare service is used.
+
+## How Codex and GPT-5.6 were used
+
+This Build Week version was developed in Codex with GPT-5.6. Codex traced the product across the React UI, Next.js route handlers, Composio OAuth, Turso/libSQL persistence, and Vercel runtime logs. GPT-5.6 helped identify and implement the high-leverage fixes while preserving security boundaries: simplifying GitHub connection to a single hosted-consent button, automatically repairing an incomplete production schema before repository import, and validating the result at the UI, API, storage, and deployment layers.
+
+Codex also accelerated repository-wide regression work: the final GitHub import returned HTTP 201 in production, `/api/health` reported durable storage, the full test suite passed 139 tests, lint passed, and the native Next.js build generated all 47 routes. Key product decisions remained human-controlled, including provider permissions, repository writes, campaign approval, repair approval, and public licensing.
+
+The OpenAI Build Week submission checklist, ready-to-personalize copy, demo script, and current screenshots are in [`docs/submission/OPENAI_BUILD_WEEK.md`](docs/submission/OPENAI_BUILD_WEEK.md).
+
 ## Verified scope
 
 - Public SaaS landing page with real registration and sign-in entry points
