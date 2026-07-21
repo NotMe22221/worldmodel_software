@@ -68,10 +68,11 @@ test("production runtime selects the Vercel adapter instead of Cloudflare Worker
   }
 });
 
-test("Vercel build preflight rejects missing durable storage without printing secrets", () => {
+test("Vercel build preflight warns about missing durable storage without printing secrets", () => {
   const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", CLOUDFLARE_D1_API_TOKEN: "never-print-this", CLOUDFLARE_ACCOUNT_ID: "", CLOUDFLARE_D1_DATABASE_ID: "", WORLDMODEL_PUBLIC_ORIGIN: "" } });
-  assert.equal(result.status, 1);
+  assert.equal(result.status, 0);
   assert.match(result.stderr, /CLOUDFLARE_ACCOUNT_ID/);
+  assert.match(result.stderr, /build will continue/i);
   assert.match(result.stderr, /WORLDMODEL_PUBLIC_ORIGIN/);
   assert.doesNotMatch(result.stderr, /never-print-this/);
 });
@@ -79,5 +80,5 @@ test("Vercel build preflight rejects missing durable storage without printing se
 test("Vercel build preflight accepts complete production storage configuration", () => {
   const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", CLOUDFLARE_D1_API_TOKEN: "secret", CLOUDFLARE_ACCOUNT_ID: "account", CLOUDFLARE_D1_DATABASE_ID: "database", WORLDMODEL_PUBLIC_ORIGIN: "https://worldmodel.example" } });
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /preflight passed/);
+  assert.match(result.stdout, /storage preflight passed/);
 });

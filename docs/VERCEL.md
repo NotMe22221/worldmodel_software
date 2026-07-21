@@ -20,14 +20,16 @@ variables for Production and Preview:
 
 The API token should be scoped to the selected account/database and only grant
 D1 Read and D1 Write. Never prefix these variables with `NEXT_PUBLIC_`.
-Deployment fails closed with `VERCEL_STORAGE_NOT_CONFIGURED` if any value is
-missing; it never falls back to temporary SQLite storage.
-The Vercel build also runs an environment preflight and stops before compilation
-when durable storage is incomplete.
+Data-backed requests fail closed with `VERCEL_STORAGE_NOT_CONFIGURED` if any
+value is missing; the application never falls back to temporary SQLite storage.
+The Vercel build warns when durable storage is incomplete but continues so the
+public pages and explicit configuration state can be deployed. `/api/health`
+continues to return HTTP 503 until durable storage is configured and reachable.
 
 ## Application configuration
 
 Set `WORLDMODEL_PUBLIC_ORIGIN` to the canonical `https://` production domain.
+Until it is set, request-derived origins are used and the build emits a warning.
 Then add the provider secrets needed for the features you intend to enable:
 
 - Composio: `COMPOSIO_API_KEY`, `COMPOSIO_GITHUB_AUTH_CONFIG_ID`
