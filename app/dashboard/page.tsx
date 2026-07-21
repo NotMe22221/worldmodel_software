@@ -257,7 +257,7 @@ type Snapshot = {
   apiUsage: { requests_today: number };
   readiness: Readiness;
   configuration: {
-    composio: { configured: boolean; githubConfigured: boolean; fixture: boolean };
+    composio: { configured: boolean; githubConfigured: boolean; fixture: boolean; missing: string[] };
     github: { configured: boolean; appSlug: string | null };
     billing: { configured: boolean; portalConfigured: boolean };
   };
@@ -1812,6 +1812,9 @@ export default function Dashboard() {
                         <div className="integration-setup-note">
                           <b>Deployment setup required</b>
                           <small>The app is deployed from GitHub, but runtime repository access needs a Composio API key and GitHub auth configuration in Vercel.</small>
+                          {data.configuration.composio.missing.length > 0 && (
+                            <small>Missing now: <code>{data.configuration.composio.missing.join(", ")}</code></small>
+                          )}
                           {canAdminWorkspace ? (
                             <a className="secondary-integration" href="/settings/providers">View platform setup instructions →</a>
                           ) : (

@@ -3,6 +3,11 @@ import { loadLocalProviderSettings } from "./provider-settings.ts";
 
 type RuntimeEnvironment = Record<string, string | undefined>;
 
+export const COMPOSIO_REQUIRED_ENVIRONMENT_VARIABLES = [
+  "COMPOSIO_API_KEY",
+  "COMPOSIO_GITHUB_AUTH_CONFIG_ID",
+] as const;
+
 export async function effectiveRuntimeEnvironment(): Promise<RuntimeEnvironment> {
   const env = await getRuntimeEnv() as RuntimeEnvironment;
   if (isLocalDevelopmentEnvironment(env)) return { ...env, ...await loadLocalProviderSettings() };
@@ -13,10 +18,19 @@ function normalized(value: string | undefined) {
   return value?.trim() || null;
 }
 
+export function composioConfigurationStatusForEnvironment(env: RuntimeEnvironment) {
+  const missing = COMPOSIO_REQUIRED_ENVIRONMENT_VARIABLES.filter((name) => !normalized(env[name]));
+  const configured = missing.length === 0;
+  return {
+    configured,
+    githubConfigured: configured,
+    fixture: env.COMPOSIO_FIXTURE_MODE === "true" && isLocalDevelopmentEnvironment(env),
+    missing,
+  };
+}
+
 export async function businessConfiguration() {
   const env = await effectiveRuntimeEnvironment();
-  const composioApiKey = normalized(env.COMPOSIO_API_KEY);
-  const composioAuthConfigId = normalized(env.COMPOSIO_GITHUB_AUTH_CONFIG_ID);
   const githubSlug = normalized(env.GITHUB_APP_SLUG);
   const githubConfigured = Boolean(
     githubSlug &&
@@ -31,13 +45,8 @@ export async function businessConfiguration() {
     normalized(env.STRIPE_PRICE_STARTER) &&
     normalized(env.STRIPE_PRICE_PRO),
   );
-  const localDevelopment = isLocalDevelopmentEnvironment(env);
   return {
-    composio: {
-      configured: Boolean(composioApiKey && composioAuthConfigId),
-      githubConfigured: Boolean(composioApiKey && composioAuthConfigId),
-      fixture: env.COMPOSIO_FIXTURE_MODE === "true" && localDevelopment,
-    },
+    composio: composioConfigurationStatusForEnvironment(env),
     github: { configured: githubConfigured, appSlug: githubSlug },
     billing: {
       configured: stripeConfigured,

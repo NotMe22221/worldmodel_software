@@ -301,6 +301,32 @@ test("provider settings are editable only in the explicitly local environment", 
   assert.deepEqual(providerSettingsModeForEnvironment({ VERCEL: "1", VERCEL_RUNTIME: "true", LOCAL_DEVELOPMENT: "true" }), { editable: false, source: "deployment_environment" });
 });
 
+test("Composio readiness reports exact missing variable names without exposing values", async () => {
+  const { composioConfigurationStatusForEnvironment } = await import("../server/runtime-config.ts");
+  assert.deepEqual(composioConfigurationStatusForEnvironment({ VERCEL: "1" }), {
+    configured: false,
+    githubConfigured: false,
+    fixture: false,
+    missing: ["COMPOSIO_API_KEY", "COMPOSIO_GITHUB_AUTH_CONFIG_ID"],
+  });
+  assert.deepEqual(composioConfigurationStatusForEnvironment({ VERCEL: "1", COMPOSIO_API_KEY: "secret" }), {
+    configured: false,
+    githubConfigured: false,
+    fixture: false,
+    missing: ["COMPOSIO_GITHUB_AUTH_CONFIG_ID"],
+  });
+  assert.deepEqual(composioConfigurationStatusForEnvironment({
+    VERCEL: "1",
+    COMPOSIO_API_KEY: "secret",
+    COMPOSIO_GITHUB_AUTH_CONFIG_ID: "ac_github",
+  }), {
+    configured: true,
+    githubConfigured: true,
+    fixture: false,
+    missing: [],
+  });
+});
+
 test("a transient callback can release its claim, retry, and consume the OAuth attempt exactly once", async () => {
   const db = attemptDatabase();
   const stateHash = "a".repeat(64);

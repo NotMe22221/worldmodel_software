@@ -6,7 +6,7 @@ import "../../auth.css";
 import "./provider.css";
 
 type Configuration = {
-  composio?: { configured?: boolean; githubConfigured?: boolean; fixture?: boolean };
+  composio?: { configured?: boolean; githubConfigured?: boolean; fixture?: boolean; missing?: string[] };
   github?: { configured?: boolean };
 };
 
@@ -21,6 +21,9 @@ export default function ProviderSettingsPage() {
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
   const [mode, setMode] = useState<ProviderMode | null>(null);
+  const missingComposioSettings = configuration.composio?.missing?.length
+    ? configuration.composio.missing
+    : ["COMPOSIO_API_KEY", "COMPOSIO_GITHUB_AUTH_CONFIG_ID"];
 
   useEffect(() => {
     const controller = new AbortController();
@@ -33,7 +36,10 @@ export default function ProviderSettingsPage() {
       .then((result) => {
         setConfiguration(result.configuration || {});
         setMode(result.mode || { editable: false, source: "deployment_environment" });
-        setStatus(result.configuration?.composio?.configured ? "Composio credentials are present. The key, auth config, and GitHub consent are verified when an owner starts the connection." : "Composio setup is incomplete.");
+        const missing = result.configuration?.composio?.missing || [];
+        setStatus(result.configuration?.composio?.configured
+          ? "Composio credentials are present. The key, auth config, and GitHub consent are verified when an owner starts the connection."
+          : `Composio setup is incomplete${missing.length ? `: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing` : ""}.`);
       })
       .catch((reason) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
@@ -85,8 +91,10 @@ export default function ProviderSettingsPage() {
           ? <p>The required values are present in this deployment. Their validity and access scope are checked when an owner starts a connection; rotate them only from the Vercel project environment.</p>
           : <><p>This deployed app intentionally does not accept provider secrets in the browser. A Vercel project administrator must add the variables below, then redeploy.</p>
             <ol>
-              <li><code>COMPOSIO_API_KEY</code><small>Least-privilege project API key from Composio.</small></li>
-              <li><code>COMPOSIO_GITHUB_AUTH_CONFIG_ID</code><small>The Composio auth config configured for GitHub.</small></li>
+              {missingComposioSettings.map((name) => <li key={name}>
+                <code>{name}</code>
+                <small>{name === "COMPOSIO_API_KEY" ? "Least-privilege project API key from Composio." : "The Composio auth config configured for GitHub."}</small>
+              </li>)}
             </ol></>}
         <p>For a scoped key, allow Connected accounts read/write and Tool execution write. Proxy execute write is also required for immutable archive downloads, exact runner-workflow revision verification, and approved draft PR publication.</p>
         <p>Keep “Automatically expose System Environment Variables” enabled so Vercel supplies the callback origin. Set <code>WORLDMODEL_PUBLIC_ORIGIN</code> only to select a different canonical HTTPS domain.</p>
