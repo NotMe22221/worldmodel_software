@@ -1,9 +1,12 @@
-import { recordAudit } from "./audit";
-import { ensureSaasSchema, getSaasSnapshot, getWorkspaceEntitlements, requireRole, requireWriteEntitlement } from "./saas";
+import { recordAudit } from "./audit.ts";
+import { ensureSaasSchema, getSaasSnapshot, getWorkspaceEntitlements, requireRole, requireWriteEntitlement } from "./saas.ts";
 import { digestInvitationSecret, generateInvitationSecret } from "../worldmodel/invitation-security.mjs";
-import { getRuntimeEnv } from "@/server/runtime-env";
+import { getRuntimeEnv } from "../server/runtime-env.ts";
 
 type TeamRole = "admin" | "member" | "viewer";
+
+export const createInvitationWithinSeatLimitSql = "INSERT INTO workspace_invitations (id, workspace_id, email, role, token_hash, invited_by, expires_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = ? AND lower(email) = lower(?)) AND ((SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ?) + (SELECT COUNT(*) FROM workspace_invitations WHERE workspace_id = ? AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP)) < ?";
+export const acceptInvitationWithinSeatLimitSql = "INSERT INTO workspace_members (workspace_id, email, role) SELECT i.workspace_id, lower(i.email), i.role FROM workspace_invitations i WHERE i.id = ? AND i.workspace_id = ? AND lower(i.email) = lower(?) AND i.status = 'pending' AND datetime(i.expires_at) > CURRENT_TIMESTAMP AND NOT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = ? AND lower(email) = lower(?)) AND (SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ?) < ? ON CONFLICT(workspace_id, email) DO NOTHING";
 
 async function getD1() {
   const env = await getRuntimeEnv();
@@ -21,18 +24,22 @@ export async function createWorkspaceInvitation(actorEmail: string, inviteeEmail
   requireWriteEntitlement(snapshot.entitlements);
   const actor = actorRole(snapshot);
   if (actor !== "owner" && role === "admin") throw new Error("Only the workspace owner can invite an administrator");
-  if (snapshot.members.some((member) => String(member.email).toLowerCase() === inviteeEmail.toLowerCase())) throw new Error("This person is already a workspace member");
-  const existingPending = snapshot.pendingInvitations.find((invitation) => String(invitation.email).toLowerCase() === inviteeEmail.toLowerCase());
-  const reservedSeats = snapshot.members.length + snapshot.pendingInvitations.length;
-  if (!existingPending && reservedSeats >= snapshot.entitlements.limits.seats) throw new Error(`${snapshot.entitlements.planName} plan seat limit reached`);
   const db = await getD1();
   const workspaceId = String(snapshot.workspace.id);
-  if (existingPending) await db.prepare("UPDATE workspace_invitations SET status = 'revoked', revoked_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'").bind(existingPending.id).run();
+  const normalizedInvitee = inviteeEmail.toLowerCase();
   const id = `inv_${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
   const token = generateInvitationSecret(id);
   const tokenHash = await digestInvitationSecret(token);
   const expiresAt = new Date(Date.now() + 7 * 86_400_000).toISOString();
-  await db.prepare("INSERT INTO workspace_invitations (id, workspace_id, email, role, token_hash, invited_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id, workspaceId, inviteeEmail.toLowerCase(), role, tokenHash, actorEmail.toLowerCase(), expiresAt).run();
+  const [, inserted] = await db.batch([
+    db.prepare("UPDATE workspace_invitations SET status = 'revoked', revoked_at = CURRENT_TIMESTAMP WHERE workspace_id = ? AND lower(email) = lower(?) AND status = 'pending'").bind(workspaceId, normalizedInvitee),
+    db.prepare(createInvitationWithinSeatLimitSql).bind(id, workspaceId, normalizedInvitee, role, tokenHash, actorEmail.toLowerCase(), expiresAt, workspaceId, normalizedInvitee, workspaceId, workspaceId, snapshot.entitlements.limits.seats),
+  ]);
+  if (Number(inserted?.meta.changes || 0) !== 1) {
+    const member = await db.prepare("SELECT 1 AS found FROM workspace_members WHERE workspace_id = ? AND lower(email) = lower(?)").bind(workspaceId, normalizedInvitee).first();
+    if (member) throw new Error("This person is already a workspace member");
+    throw new Error(`${snapshot.entitlements.planName} plan seat limit reached`);
+  }
   await recordAudit({ workspaceId, actorEmail, action: "invitation.created", targetType: "workspace_invitation", targetId: id, summary: `Invited ${inviteeEmail} as ${role}`, metadata: { role, expiresAt } });
   const invitation = await db.prepare("SELECT id, email, role, status, invited_by, expires_at, created_at FROM workspace_invitations WHERE id = ?").bind(id).first();
   return { invitation, token };
@@ -81,18 +88,22 @@ export async function inspectWorkspaceInvitation(email: string, token: string) {
 export async function acceptWorkspaceInvitation(email: string, token: string) {
   const invitation = await findInvitation(email, token);
   const db = await getD1();
-  const existing = await db.prepare("SELECT role FROM workspace_members WHERE workspace_id = ? AND lower(email) = lower(?)").bind(invitation.workspace_id, email).first<{ role: string }>();
-  if (!existing) {
-    const entitlements = await getWorkspaceEntitlements(invitation.workspace_id);
-    const seats = await db.prepare("SELECT COUNT(*) AS count FROM workspace_members WHERE workspace_id = ?").bind(invitation.workspace_id).first<{ count: number }>();
-    if (Number(seats?.count || 0) >= entitlements.limits.seats) throw new Error("The workspace no longer has an available seat");
+  const normalizedEmail = email.toLowerCase();
+  const entitlements = await getWorkspaceEntitlements(invitation.workspace_id);
+  const [, claimed] = await db.batch([
+    db.prepare(acceptInvitationWithinSeatLimitSql).bind(invitation.id, invitation.workspace_id, normalizedEmail, invitation.workspace_id, normalizedEmail, invitation.workspace_id, entitlements.limits.seats),
+    db.prepare("UPDATE workspace_invitations SET status = 'accepted', accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ? AND lower(email) = lower(?) AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP AND EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = ? AND lower(email) = lower(?))").bind(invitation.id, invitation.workspace_id, normalizedEmail, invitation.workspace_id, normalizedEmail),
+  ]);
+  if (Number(claimed?.meta.changes || 0) !== 1) {
+    const stillPending = await db.prepare("SELECT 1 AS found FROM workspace_invitations WHERE id = ? AND workspace_id = ? AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP").bind(invitation.id, invitation.workspace_id).first();
+    if (stillPending) throw new Error("The workspace no longer has an available seat");
+    throw new Error("Invitation is invalid, expired, or already used");
   }
-  const claimed = await db.prepare("UPDATE workspace_invitations SET status = 'accepted', accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP").bind(invitation.id).run();
-  if (!claimed.meta.changes) throw new Error("Invitation is invalid, expired, or already used");
-  if (!existing) await db.prepare("INSERT INTO workspace_members (workspace_id, email, role) VALUES (?, ?, ?)").bind(invitation.workspace_id, email.toLowerCase(), invitation.role).run();
+  const membership = await db.prepare("SELECT role FROM workspace_members WHERE workspace_id = ? AND lower(email) = lower(?)").bind(invitation.workspace_id, normalizedEmail).first<{ role: string }>();
+  if (!membership) throw new Error("The workspace no longer has an available seat");
   await db.prepare("INSERT INTO user_preferences (email, active_workspace_id) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET active_workspace_id = excluded.active_workspace_id, updated_at = CURRENT_TIMESTAMP").bind(email.toLowerCase(), invitation.workspace_id).run();
-  await recordAudit({ workspaceId: invitation.workspace_id, actorEmail: email, action: "invitation.accepted", targetType: "workspace_invitation", targetId: invitation.id, summary: `${email} joined the workspace`, metadata: { role: existing?.role || invitation.role } });
-  return { workspaceId: invitation.workspace_id, workspaceName: invitation.workspace_name, role: existing?.role || invitation.role };
+  await recordAudit({ workspaceId: invitation.workspace_id, actorEmail: email, action: "invitation.accepted", targetType: "workspace_invitation", targetId: invitation.id, summary: `${email} joined the workspace`, metadata: { role: membership.role } });
+  return { workspaceId: invitation.workspace_id, workspaceName: invitation.workspace_name, role: membership.role };
 }
 
 export async function updateWorkspaceMemberRole(actorEmail: string, memberEmail: string, role: TeamRole) {

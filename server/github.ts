@@ -213,6 +213,43 @@ export async function repositoryTreeWithToken(
   };
 }
 
+export async function githubRepositoryFileAtCommit(
+  installationId: string,
+  fullName: string,
+  filePath: string,
+  commitSha: string,
+) {
+  return githubRepositoryFileAtCommitWithToken(fullName, filePath, commitSha, await installationToken(installationId));
+}
+
+export async function githubRepositoryFileAtCommitWithToken(
+  fullName: string,
+  filePath: string,
+  commitSha: string,
+  token: string,
+) {
+  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(fullName);
+  if (!match || !/^[A-Za-z0-9_.\/-]{1,240}$/.test(filePath) || filePath.startsWith("/") || filePath.split("/").includes("..") || !/^[a-f0-9]{40}$/i.test(commitSha)) throw new Error("GitHub workflow revision is invalid");
+  const file = await githubFetch<{ type?: string; encoding?: string; content?: string; size?: number }>(
+    `https://api.github.com/repos/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}/contents/${filePath.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(commitSha)}`,
+    token,
+  );
+  if (file.type !== "file" || file.encoding !== "base64" || typeof file.content !== "string" || !Number.isSafeInteger(file.size) || Number(file.size) < 1 || Number(file.size) > 100_000) throw new Error("GitHub workflow file is invalid");
+  let content: Uint8Array;
+  try {
+    const binary = atob(file.content.replace(/\s/g, ""));
+    content = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    throw new Error("GitHub workflow file is invalid");
+  }
+  if (content.byteLength !== file.size) throw new Error("GitHub workflow file size is invalid");
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(content);
+  } catch {
+    throw new Error("GitHub workflow file encoding is invalid");
+  }
+}
+
 function standardBase64(value: string) {
   const bytes = new TextEncoder().encode(value);
   let binary = "";
@@ -330,12 +367,43 @@ export async function publishGithubDraftEvidenceWithToken(
   return created.payload;
 }
 
-export async function publishGithubDraftFiles(input: { installationId: string; owner: string; repository: string; baseBranch: string; baseSha: string; headBranch: string; title: string; body: string; files: Array<{ path: string; content: string }> }) {
-  const token = await installationToken(input.installationId);
-  if (!/^[a-f0-9]{40}$/i.test(input.baseSha) || !/^worldmodel\/[a-z0-9._/-]{3,180}$/i.test(input.headBranch)) throw new Error("GitHub draft branch basis is invalid");
+type GithubDraftFilesInput = {
+  owner: string;
+  repository: string;
+  baseBranch: string;
+  baseSha: string;
+  headBranch: string;
+  title: string;
+  body: string;
+  files: Array<{ path: string; content: string }>;
+  freshBranchFromBase?: boolean;
+};
+
+export async function publishGithubDraftFiles(input: GithubDraftFilesInput & { installationId: string }) {
+  return publishGithubDraftFilesWithToken(input, await installationToken(input.installationId));
+}
+
+export async function publishGithubDraftFilesWithToken(input: GithubDraftFilesInput, token: string) {
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(input.owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(input.repository) || !/^[A-Za-z0-9._/-]{1,120}$/.test(input.baseBranch) || !/^[a-f0-9]{40}$/i.test(input.baseSha) || !/^worldmodel\/[a-z0-9._/-]{3,180}$/i.test(input.headBranch)) throw new Error("GitHub draft branch basis is invalid");
   if (!input.files.length || input.files.length > 30) throw new Error("GitHub draft requires 1-30 bounded files");
-  for (const file of input.files) if (!/^[A-Za-z0-9_.\/-]{1,240}$/.test(file.path) || file.path.startsWith("/") || file.path.split("/").includes("..") || file.path.startsWith(".github/workflows/") || file.content.length > 1_000_000) throw new Error(`GitHub draft file is prohibited: ${file.path}`);
+  for (const file of input.files) if (!/^[A-Za-z0-9_.\/-]{1,240}$/.test(file.path) || file.path.startsWith("/") || file.path.split("/").includes("..") || file.path.toLowerCase().startsWith(".github/workflows/") || file.content.length > 1_000_000) throw new Error(`GitHub draft file is prohibited: ${file.path}`);
   const root = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}`;
+  if (input.freshBranchFromBase) {
+    const baseCommit = await githubRequest<{ sha: string; tree: { sha: string } }>(`${root}/git/commits/${input.baseSha}`, token);
+    if (baseCommit.payload.sha.toLowerCase() !== input.baseSha.toLowerCase() || !/^[a-f0-9]{40}$/i.test(baseCommit.payload.tree?.sha || "")) throw new Error("GitHub returned an invalid approved base commit");
+    const treeEntries: Array<{ path: string; mode: "100644"; type: "blob"; sha: string }> = [];
+    for (const file of input.files) {
+      const blob = await githubRequest<{ sha: string }>(`${root}/git/blobs`, token, { method: "POST", body: JSON.stringify({ content: standardBase64(file.content), encoding: "base64" }) });
+      if (!/^[a-f0-9]{40}$/i.test(blob.payload.sha || "")) throw new Error("GitHub returned an invalid candidate blob");
+      treeEntries.push({ path: file.path, mode: "100644", type: "blob", sha: blob.payload.sha });
+    }
+    const tree = await githubRequest<{ sha: string }>(`${root}/git/trees`, token, { method: "POST", body: JSON.stringify({ base_tree: baseCommit.payload.tree.sha, tree: treeEntries }) });
+    if (!/^[a-f0-9]{40}$/i.test(tree.payload.sha || "")) throw new Error("GitHub returned an invalid candidate tree");
+    const commit = await githubRequest<{ sha: string }>(`${root}/git/commits`, token, { method: "POST", body: JSON.stringify({ message: "fix: WorldModel verified repair candidate", tree: tree.payload.sha, parents: [input.baseSha] }) });
+    if (!/^[a-f0-9]{40}$/i.test(commit.payload.sha || "")) throw new Error("GitHub returned an invalid candidate commit");
+    await githubRequest(`${root}/git/refs`, token, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${input.headBranch}`, sha: commit.payload.sha }) }, [201]);
+    return (await githubRequest<{ number: number; html_url: string; draft: boolean }>(`${root}/pulls`, token, { method: "POST", body: JSON.stringify({ title: input.title, head: input.headBranch, base: input.baseBranch, body: input.body, draft: true, maintainer_can_modify: true }) }, [201])).payload;
+  }
   const headRef = `${root}/git/ref/heads/${input.headBranch.split("/").map(encodeURIComponent).join("/")}`;
   const existingHead = await githubRequest<{ object: { sha: string } }>(headRef, token, undefined, [200, 404]);
   if (existingHead.status === 404) await githubRequest(`${root}/git/refs`, token, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${input.headBranch}`, sha: input.baseSha }) });

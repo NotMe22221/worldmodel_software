@@ -1,12 +1,12 @@
-import { createProject, ensureSaasSchema, getSaasSnapshot, requireRole } from "./saas";
+import { createProjectForWorkspace, getSaasSnapshot, requireRole } from "./saas";
 import type { GithubInstallation, GithubRepository } from "../server/github";
 import { recordAudit } from "./audit";
-import { planCatalog } from "../worldmodel/entitlements.mjs";
 import { repositoryTree } from "../server/github";
 import { buildRepositoryGraph } from "../worldmodel/repository-graph.mjs";
-import { createModelVersion } from "./product";
+import { createModelVersionForProject } from "./product";
 import { getRuntimeEnv } from "@/server/runtime-env";
 import { githubConnectionStatements, requireImportableGithubRepository, selectGithubRepository } from "./github-app.ts";
+import { refreshVerifiedProjectMapping } from "./repository-mapping.ts";
 
 async function getD1() {
   const env = await getRuntimeEnv();
@@ -61,20 +61,32 @@ export async function importGithubRepository(email: string, repositoryId: string
   const graph = buildRepositoryGraph(tree.entries, { repository: repository.full_name, branch: repository.default_branch, commitSha: tree.commitSha, truncated: tree.truncated });
   const graphJson = JSON.stringify(graph);
   const scanSummary = `${graph.nodes.length} components from ${graph.scannedPathCount} repository paths${graph.truncated ? " (GitHub tree truncated)" : ""}`;
-  const existing = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? AND lower(repository) = lower(?) LIMIT 1").bind(snapshot.workspace.id, repository.full_name).first();
+  const workspaceId = String(snapshot.workspace.id);
+  const existing = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? AND lower(repository) = lower(?) LIMIT 1").bind(workspaceId, repository.full_name).first<Record<string, unknown>>();
   if (existing) {
-    await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1, graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, existing.id, snapshot.workspace.id).run();
-    await selectGithubRepository(db, String(snapshot.workspace.id), repositoryId);
-    await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "repository.mapped", targetType: "project", targetId: String(existing.id), summary: `Mapped ${graph.nodes.length} components from ${repository.full_name}`, metadata: { scannedPathCount: graph.scannedPathCount, truncated: graph.truncated } });
-    await createModelVersion(email, String(existing.id), { commitSha: tree.commitSha, graph, confidence: graph.truncated ? 70 : 85 });
+    await refreshVerifiedProjectMapping(db, {
+      workspaceId,
+      projectId: String(existing.id),
+      defaultBranch: repository.default_branch,
+      graphJson,
+      scanSummary,
+      serviceCount: graph.nodes.length,
+    });
+    const mapped = await db.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(existing.id, workspaceId).first<Record<string, unknown>>();
+    if (!mapped) throw new Error("Verified project mapping was not persisted");
+    await selectGithubRepository(db, workspaceId, repositoryId);
+    await recordAudit({ workspaceId, actorEmail: email, action: "repository.mapped", targetType: "project", targetId: String(existing.id), summary: `Mapped ${graph.nodes.length} components from ${repository.full_name}`, metadata: { scannedPathCount: graph.scannedPathCount, truncated: graph.truncated } });
+    await createModelVersionForProject(db, workspaceId, mapped, { commitSha: tree.commitSha, graph, confidence: graph.truncated ? 70 : 85 });
     return db.prepare("SELECT * FROM projects WHERE id = ?").bind(existing.id).first();
   }
   const name = repository.full_name.split("/").pop()?.replaceAll("-", " ") || repository.full_name;
-  const project = await createProject(email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch, sourceKind: "github", repositoryVerified: true });
-  await db.prepare("UPDATE projects SET graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, project?.id, snapshot.workspace.id).run();
-  await selectGithubRepository(db, String(snapshot.workspace.id), repositoryId);
-  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "repository.imported", targetType: "github_repository", targetId: repositoryId, summary: `Imported and mapped ${repository.full_name} from GitHub`, metadata: { projectId: String(project?.id || ""), componentCount: graph.nodes.length, scannedPathCount: graph.scannedPathCount, truncated: graph.truncated } });
-  await createModelVersion(email, String(project?.id), { commitSha: tree.commitSha, graph, confidence: graph.truncated ? 70 : 85 });
+  const project = await createProjectForWorkspace(workspaceId, email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch, sourceKind: "github", repositoryVerified: true });
+  await db.prepare("UPDATE projects SET graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, project?.id, workspaceId).run();
+  const mapped = await db.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(project?.id, workspaceId).first<Record<string, unknown>>();
+  if (!mapped) throw new Error("Verified project mapping was not persisted");
+  await selectGithubRepository(db, workspaceId, repositoryId);
+  await recordAudit({ workspaceId, actorEmail: email, action: "repository.imported", targetType: "github_repository", targetId: repositoryId, summary: `Imported and mapped ${repository.full_name} from GitHub`, metadata: { projectId: String(project?.id || ""), componentCount: graph.nodes.length, scannedPathCount: graph.scannedPathCount, truncated: graph.truncated } });
+  await createModelVersionForProject(db, workspaceId, mapped, { commitSha: tree.commitSha, graph, confidence: graph.truncated ? 70 : 85 });
   return db.prepare("SELECT * FROM projects WHERE id = ?").bind(project?.id).first();
 }
 
@@ -84,43 +96,4 @@ export async function billingContext(email: string) {
   const db = await getD1();
   const subscription = await db.prepare("SELECT * FROM subscriptions WHERE workspace_id = ?").bind(snapshot.workspace.id).first<{ stripe_customer_id: string | null }>();
   return { workspaceId: String(snapshot.workspace.id), email, customerId: subscription?.stripe_customer_id || null };
-}
-
-type StripeEvent = { id: string; type: string; data: { object: Record<string, unknown> } };
-
-function stringField(record: Record<string, unknown>, key: string) {
-  const value = record[key];
-  return typeof value === "string" ? value : null;
-}
-
-export async function processStripeEvent(event: StripeEvent) {
-  await ensureSaasSchema();
-  const db = await getD1();
-  const processed = await db.prepare("SELECT event_id FROM billing_events WHERE event_id = ?").bind(event.id).first();
-  if (processed) return { duplicate: true };
-  const supportedEvents = new Set(["checkout.session.completed", "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted", "customer.subscription.paused", "customer.subscription.resumed", "customer.subscription.trial_will_end"]);
-  if (!supportedEvents.has(event.type)) {
-    await db.prepare("INSERT OR IGNORE INTO billing_events (event_id, event_type) VALUES (?, ?)").bind(event.id, event.type).run();
-    return { ignored: true };
-  }
-  const object = event.data.object;
-  const metadata = object.metadata && typeof object.metadata === "object" ? object.metadata as Record<string, unknown> : {};
-  const workspaceId = stringField(metadata, "workspace_id") || stringField(object, "client_reference_id");
-  if (!workspaceId) { await db.prepare("INSERT OR IGNORE INTO billing_events (event_id, event_type) VALUES (?, ?)").bind(event.id, event.type).run(); return { ignored: true }; }
-  const workspace = await db.prepare("SELECT id FROM workspaces WHERE id = ?").bind(workspaceId).first();
-  if (!workspace) { await db.prepare("INSERT OR IGNORE INTO billing_events (event_id, event_type) VALUES (?, ?)").bind(event.id, event.type).run(); return { ignored: true }; }
-  const requestedPlan = stringField(metadata, "plan") || "pro";
-  const plan = requestedPlan === "starter" || requestedPlan === "business" ? requestedPlan : "pro";
-  const customer = typeof object.customer === "string" ? object.customer : null;
-  const subscriptionId = event.type === "checkout.session.completed" ? (typeof object.subscription === "string" ? object.subscription : null) : stringField(object, "id");
-  const status = event.type === "customer.subscription.deleted" ? "canceled" : stringField(object, "status") || (event.type === "checkout.session.completed" ? "pending" : "active");
-  const periodEnd = typeof object.current_period_end === "number" ? new Date(object.current_period_end * 1000).toISOString() : null;
-  await db.prepare("INSERT INTO subscriptions (workspace_id, stripe_customer_id, stripe_subscription_id, status, plan, current_period_end) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET stripe_customer_id = COALESCE(excluded.stripe_customer_id, subscriptions.stripe_customer_id), stripe_subscription_id = COALESCE(excluded.stripe_subscription_id, subscriptions.stripe_subscription_id), status = excluded.status, plan = excluded.plan, current_period_end = excluded.current_period_end, updated_at = CURRENT_TIMESTAMP").bind(workspaceId, customer, subscriptionId, status, plan, periodEnd).run();
-  const provisioned = status === "active" || status === "trialing" || status === "past_due";
-  const terminal = ["canceled", "unpaid", "paused", "incomplete_expired"].includes(status);
-  if (provisioned) await db.prepare("UPDATE workspaces SET plan = ?, monthly_limit = ? WHERE id = ?").bind(plan, planCatalog[plan].simulationMinutes, workspaceId).run();
-  if (terminal) await db.prepare("UPDATE workspaces SET plan = 'free', monthly_limit = ? WHERE id = ?").bind(planCatalog.free.simulationMinutes, workspaceId).run();
-  await db.prepare("INSERT OR IGNORE INTO billing_events (event_id, event_type) VALUES (?, ?)").bind(event.id, event.type).run();
-  await recordAudit({ workspaceId, actorEmail: "stripe@system.worldmodel", action: "subscription.updated", targetType: "subscription", targetId: subscriptionId, summary: `Subscription status changed to ${status}`, metadata: { plan, eventType: event.type } });
-  return { duplicate: false, workspaceId, status };
 }

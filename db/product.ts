@@ -3,12 +3,31 @@ import { recordAudit } from "./audit";
 import { campaignExecutionReadiness, dispatchCampaign, dispatchRepair, dispatchScan, requireCampaignExecution } from "@/server/execution";
 import { draftCampaignWithOpenAI } from "@/server/openai";
 import { publishGithubDraftFiles } from "@/server/github";
-import { getRuntimeEnv } from "@/server/runtime-env";
+import { getRuntimeEnv, type RuntimeDatabase } from "@/server/runtime-env";
 import { getComposioGithubCommit, publishComposioGithubDraftFiles, type RepositorySource } from "@/server/composio";
 import { validateCampaign, validateJourney, validateManifest, type CampaignPlan, type JourneyDefinition, type WorldModelManifest } from "@/worldmodel/product-contracts";
+import { MAX_CANDIDATE_ARTIFACT_BYTES, verifyCandidateArtifact, type PublishableCandidateArtifact } from "@/worldmodel/candidate-artifact";
 
 async function runtimeDb() { const db = (await getRuntimeEnv()).DB; if (!db) throw new Error("database_unavailable: Durable database is unavailable"); return db; }
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+
+async function ensureReportApprovalArtifactColumns(db: RuntimeDatabase) {
+  const columns = await db.prepare("PRAGMA table_info(report_approvals)").all<{ name: string }>();
+  const existing = new Set(columns.results.map((column) => column.name));
+  const additions: Array<[string, string]> = [
+    ["artifact_ref", "TEXT"],
+    ["artifact_sha256", "TEXT"],
+    ["artifact_size_bytes", "INTEGER"],
+  ];
+  for (const [name, type] of additions) {
+    if (existing.has(name)) continue;
+    try {
+      await db.prepare("ALTER TABLE report_approvals ADD COLUMN " + name + " " + type).run();
+    } catch (error) {
+      if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
+  }
+}
 
 export async function ensureProductSchema() {
   const db = await runtimeDb();
@@ -35,8 +54,9 @@ export async function ensureProductSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS patch_candidates (id TEXT PRIMARY KEY, investigation_id TEXT NOT NULL, workspace_id TEXT NOT NULL, strategy TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', patch_ref TEXT, changed_files_json TEXT NOT NULL DEFAULT '[]', tests_json TEXT NOT NULL DEFAULT '[]', gates_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}', score INTEGER, risks_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS verification_runs (id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL, workspace_id TEXT NOT NULL, scenario_fingerprint TEXT NOT NULL, seed TEXT NOT NULL, status TEXT NOT NULL, metrics_json TEXT NOT NULL DEFAULT '{}', gates_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS decision_reports (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, project_id TEXT NOT NULL, run_id TEXT NOT NULL, candidate_id TEXT, status TEXT NOT NULL DEFAULT 'draft', report_json TEXT NOT NULL, artifact_ref TEXT, share_token_hash TEXT, visibility TEXT NOT NULL DEFAULT 'private', published_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS report_approvals (report_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approved_by TEXT NOT NULL, approved_at TEXT NOT NULL, decision_note TEXT NOT NULL, pr_status TEXT NOT NULL DEFAULT 'not_requested', pr_url TEXT, pr_number INTEGER, published_at TEXT)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS report_approvals (report_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approved_by TEXT NOT NULL, approved_at TEXT NOT NULL, decision_note TEXT NOT NULL, artifact_ref TEXT, artifact_sha256 TEXT, artifact_size_bytes INTEGER, pr_status TEXT NOT NULL DEFAULT 'not_requested', pr_url TEXT, pr_number INTEGER, published_at TEXT)"),
   ]);
+  await ensureReportApprovalArtifactColumns(db);
 }
 
 async function context(email: string, projectId: string, write = false) {
@@ -95,10 +115,25 @@ export async function rescanRepository(email: string, projectId: string) {
 }
 
 export async function createModelVersion(email: string, projectId: string, input: { commitSha: string; graph: unknown; confidence: number }) {
-  const { db, workspaceId } = await context(email, projectId, true);
-  if (!/^[a-f0-9]{7,64}$/i.test(input.commitSha) || !input.graph || typeof input.graph !== "object") throw new Error("model_invalid: Commit SHA and graph are required");
+  const { db, workspaceId, project } = await context(email, projectId, true);
+  return createModelVersionForProject(db, workspaceId, project, input);
+}
+
+export async function createModelVersionForProject(db: RuntimeDatabase, workspaceId: string, project: Record<string, unknown>, input: { commitSha: string; graph: unknown; confidence: number }) {
+  const projectId = String(project.id || "");
+  if (!/^[a-f0-9]{40}$/i.test(input.commitSha) || !input.graph || typeof input.graph !== "object" || !Number.isFinite(input.confidence)) throw new Error("model_invalid: An immutable commit, graph, and confidence are required");
+  const graph = input.graph as { version?: unknown; source?: unknown; repository?: unknown; branch?: unknown; commitSha?: unknown; nodes?: unknown; edges?: unknown };
+  const graphJson = JSON.stringify(graph);
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  const graphMatchesProject = graph.version === 1
+    && graph.source === "github_tree"
+    && String(graph.repository || "").toLowerCase() === String(project.repository || "").toLowerCase()
+    && graph.branch === project.branch
+    && String(graph.commitSha || "").toLowerCase() === input.commitSha.toLowerCase();
+  if (project.repository_verified !== 1 || !project.scanned_at || !graphMatchesProject || nodes.length < 1 || nodes.length > 250 || edges.length > 500 || graphJson.length > 1_000_000) throw new Error("model_invalid: Model versions must come from the verified repository scan");
   const modelId = id("model");
-  await db.prepare("INSERT INTO model_versions (id, workspace_id, project_id, commit_sha, graph_json, confidence) VALUES (?, ?, ?, ?, ?, ?)").bind(modelId, workspaceId, projectId, input.commitSha, JSON.stringify(input.graph), Math.max(0, Math.min(100, input.confidence))).run();
+  await db.prepare("INSERT INTO model_versions (id, workspace_id, project_id, commit_sha, graph_json, confidence) VALUES (?, ?, ?, ?, ?, ?)").bind(modelId, workspaceId, projectId, input.commitSha, graphJson, Math.max(0, Math.min(100, Math.round(input.confidence)))).run();
   return db.prepare("SELECT * FROM model_versions WHERE id = ?").bind(modelId).first();
 }
 
@@ -115,7 +150,7 @@ export async function saveEnvironment(email: string, projectId: string, input: {
   const { db, workspaceId } = await context(email, projectId, true);
   const manifest = validateManifest(input.manifest);
   if (input.backend !== "github_actions") throw new Error("environment_invalid: GitHub Actions is the supported execution backend");
-  const model = await db.prepare("SELECT id FROM model_versions WHERE id = ? AND workspace_id = ? AND project_id = ?").bind(input.modelVersionId, workspaceId, projectId).first();
+  const model = await db.prepare("SELECT id FROM model_versions WHERE id = ? AND workspace_id = ? AND project_id = ? AND status = 'approved'").bind(input.modelVersionId, workspaceId, projectId).first();
   if (!model) throw new Error("model_not_found: Approve a model version first");
   const environmentId = id("env");
   await db.prepare("INSERT INTO environment_revisions (id, workspace_id, project_id, model_version_id, backend, status, manifest_json, approved_by, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(environmentId, workspaceId, projectId, input.modelVersionId, input.backend, input.approve ? "approved" : "draft", JSON.stringify(manifest), input.approve ? email : null, input.approve ? new Date().toISOString() : null).run();
@@ -139,8 +174,8 @@ export async function assistantMessage(email: string, projectId: string, input: 
   const conversation = await db.prepare("SELECT * FROM agent_conversations WHERE id = ? AND workspace_id = ? AND project_id = ?").bind(conversationId, workspaceId, projectId).first<Record<string, unknown>>();
   if (!conversation) throw new Error("conversation_not_found: Conversation was not found");
   await db.prepare("INSERT INTO agent_messages (id, conversation_id, workspace_id, role, content) VALUES (?, ?, ?, 'user', ?)").bind(id("msg"), conversationId, workspaceId, input.message.trim()).run();
-  const model = await db.prepare("SELECT * FROM model_versions WHERE workspace_id = ? AND project_id = ? AND status IN ('approved','ready') ORDER BY created_at DESC LIMIT 1").bind(workspaceId, projectId).first<Record<string, unknown>>();
-  const environment = await db.prepare("SELECT * FROM environment_revisions WHERE workspace_id = ? AND project_id = ? AND status IN ('approved','ready') ORDER BY created_at DESC LIMIT 1").bind(workspaceId, projectId).first<Record<string, unknown>>();
+  const model = await db.prepare("SELECT * FROM model_versions WHERE workspace_id = ? AND project_id = ? AND status = 'approved' ORDER BY created_at DESC LIMIT 1").bind(workspaceId, projectId).first<Record<string, unknown>>();
+  const environment = await db.prepare("SELECT * FROM environment_revisions WHERE workspace_id = ? AND project_id = ? AND status = 'approved' ORDER BY created_at DESC LIMIT 1").bind(workspaceId, projectId).first<Record<string, unknown>>();
   if (!model || !environment) throw new Error("project_not_ready: Approve the system model and environment before drafting campaigns");
   const journeys = await db.prepare("SELECT id, definition_json FROM user_journeys WHERE workspace_id = ? AND project_id = ? AND status = 'approved'").bind(workspaceId, projectId).all<Record<string, unknown>>();
   if (!journeys.results.length) throw new Error("project_not_ready: Approve at least one critical journey before drafting campaigns");
@@ -158,16 +193,29 @@ export async function assistantMessage(email: string, projectId: string, input: 
 }
 
 export async function approveCampaign(email: string, projectId: string, campaignId: string) {
-  const { db, workspaceId } = await context(email, projectId, true);
+  const { db, workspaceId, snapshot } = await context(email, projectId, true);
   const campaign = await db.prepare("SELECT * FROM campaigns WHERE id = ? AND workspace_id = ? AND project_id = ?").bind(campaignId, workspaceId, projectId).first<Record<string, unknown>>();
   if (!campaign || !["draft", "dispatch_failed"].includes(String(campaign.status))) throw new Error("campaign_invalid_state: Only a draft or safely failed campaign can be approved");
   const plan = validateCampaign(JSON.parse(String(campaign.plan_json))) as CampaignPlan;
-  const environment = await db.prepare("SELECT * FROM environment_revisions WHERE workspace_id = ? AND project_id = ? AND status IN ('approved','ready') ORDER BY created_at DESC LIMIT 1").bind(workspaceId, projectId).first<Record<string, unknown>>();
+  const environment = await db.prepare("SELECT * FROM environment_revisions WHERE workspace_id = ? AND project_id = ? AND status = 'approved' ORDER BY created_at DESC LIMIT 1").bind(workspaceId, projectId).first<Record<string, unknown>>();
   if (!environment) throw new Error("project_not_ready: Approved environment is required");
   const manifest = validateManifest(JSON.parse(String(environment.manifest_json))) as WorldModelManifest;
   if (plan.scenarios.some((scenario) => scenario.environmentRevisionId !== environment.id || scenario.modelVersionId !== environment.model_version_id || scenario.evidenceMode !== "observed")) throw new Error("campaign_invalid: Every scenario must use the approved model, environment, and observed evidence mode");
-  const executionBasis = await db.prepare("SELECT p.repository, p.branch, mv.commit_sha FROM projects p JOIN model_versions mv ON mv.id = ? AND mv.workspace_id = p.workspace_id WHERE p.id = ? AND p.workspace_id = ? LIMIT 1").bind(String(environment.model_version_id), projectId, workspaceId).first<Record<string, unknown>>();
-  if (!executionBasis?.commit_sha || !/^[a-f0-9]{40}$/i.test(String(executionBasis.commit_sha))) throw new Error("project_not_ready: An exact 40-character commit basis is required");
+  const [executionBasis, approvedJourneys] = await Promise.all([
+    db.prepare("SELECT p.repository, p.branch, p.repository_verified, mv.commit_sha, mv.graph_json FROM projects p JOIN model_versions mv ON mv.id = ? AND mv.workspace_id = p.workspace_id AND mv.project_id = p.id AND mv.status = 'approved' WHERE p.id = ? AND p.workspace_id = ? LIMIT 1").bind(String(environment.model_version_id), projectId, workspaceId).first<Record<string, unknown>>(),
+    db.prepare("SELECT id FROM user_journeys WHERE workspace_id = ? AND project_id = ? AND status = 'approved'").bind(workspaceId, projectId).all<{ id: string }>(),
+  ]);
+  if (!executionBasis?.commit_sha || executionBasis.repository_verified !== 1 || !/^[a-f0-9]{40}$/i.test(String(executionBasis.commit_sha))) throw new Error("project_not_ready: An approved model from an ownership-verified immutable commit is required");
+  let graph: { nodes?: Array<{ id?: unknown }> };
+  try { graph = JSON.parse(String(executionBasis.graph_json)); } catch { throw new Error("project_not_ready: The approved repository model is invalid"); }
+  const allowedJourneys = new Set(approvedJourneys.results.map((journey) => journey.id));
+  const allowedTargets = new Set([
+    ...(graph.nodes || []).map((node) => String(node.id || "")),
+    ...manifest.services.map((service) => service.id),
+    ...manifest.mocks.map((mock) => mock.service),
+  ]);
+  const supportedFaults = new Set(manifest.supportedFaults);
+  if (plan.scenarios.some((scenario) => scenario.journeyIds.some((journeyId) => !allowedJourneys.has(journeyId)) || scenario.faults.some((fault) => !allowedTargets.has(fault.target) || !supportedFaults.has(fault.kind)))) throw new Error("campaign_invalid: Scenarios may reference only approved journeys, modeled service targets, and supported faults");
   const [composio, githubApp] = await Promise.all([
     db.prepare("SELECT c.connected_account_id, c.composio_user_id FROM composio_github_repositories r JOIN composio_connections c ON c.id = r.connection_id AND c.workspace_id = r.workspace_id WHERE r.workspace_id = ? AND lower(r.full_name) = lower(?) AND c.status = 'active' LIMIT 1").bind(workspaceId, String(executionBasis.repository)).first<Record<string, unknown>>(),
     db.prepare("SELECT gr.installation_id FROM github_workspace_repositories gr JOIN github_workspace_installations gi ON gi.workspace_id = gr.workspace_id AND gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1").bind(workspaceId, String(executionBasis.repository)).first<Record<string, unknown>>(),
@@ -177,25 +225,44 @@ export async function approveCampaign(email: string, projectId: string, campaign
     : { kind: "github_app", installationId: String(githubApp?.installation_id || "") };
   if (repositorySource.kind === "github_app" && !repositorySource.installationId) throw new Error("project_not_ready: An active Composio or GitHub App repository connection is required");
   await requireCampaignExecution(String(environment.backend));
+  const previousStatus = String(campaign.status);
+  const approvedAt = campaign.approved_at ? String(campaign.approved_at) : new Date().toISOString();
+  const claim = await db.prepare("UPDATE campaigns SET status = 'dispatching', approved_by = ?, approved_at = ?, workflow_id = ?, cancellation_requested_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ? AND project_id = ? AND status = ?").bind(email, approvedAt, campaignId, campaignId, workspaceId, projectId, previousStatus).run();
+  if (Number(claim.meta.changes || 0) !== 1) throw new Error("campaign_invalid_state: This campaign is already being approved or executed");
+  const releaseClaim = () => db.prepare("UPDATE campaigns SET status = ?, approved_by = ?, approved_at = ?, workflow_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ? AND project_id = ? AND status = 'dispatching' AND workflow_id = ?").bind(previousStatus, campaign.approved_by ?? null, campaign.approved_at ?? null, campaign.workflow_id ?? null, campaignId, workspaceId, projectId, campaignId).run();
+  const reservedMinutes = campaign.approved_at ? 0 : plan.estimatedMinutes;
+  if (reservedMinutes > 0) {
+    const reservation = await db.prepare("UPDATE workspaces SET simulation_minutes = simulation_minutes + ? WHERE id = ? AND simulation_minutes + ? <= ?").bind(reservedMinutes, workspaceId, reservedMinutes, snapshot.entitlements.limits.simulationMinutes).run();
+    if (Number(reservation.meta.changes || 0) !== 1) {
+      await releaseClaim();
+      throw new Error("entitlement_limit: This campaign exceeds the workspace's remaining simulation minutes");
+    }
+  }
   const statements = [
     db.prepare("DELETE FROM campaign_runs WHERE campaign_id = ? AND workspace_id = ? AND status IN ('cancelled','failed')").bind(campaignId, workspaceId),
-    db.prepare("UPDATE campaigns SET status = 'dispatching', approved_by = ?, approved_at = ?, workflow_id = ?, cancellation_requested_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(email, new Date().toISOString(), campaignId, campaignId, workspaceId),
   ];
   plan.scenarios.forEach((scenario, index) => statements.push(db.prepare("INSERT INTO campaign_runs (id, campaign_id, workspace_id, project_id, scenario_index, scenario_json) VALUES (?, ?, ?, ?, ?, ?)").bind(id("crun"), campaignId, workspaceId, projectId, index, JSON.stringify(scenario))));
-  await db.batch(statements);
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    if (reservedMinutes > 0) await db.prepare("UPDATE workspaces SET simulation_minutes = MAX(0, simulation_minutes - ?) WHERE id = ?").bind(reservedMinutes, workspaceId).run();
+    await releaseClaim();
+    throw error;
+  }
   let dispatched: { workflowId: string };
   try {
     dispatched = await dispatchCampaign({ campaignId, workspaceId, projectId, backend: String(environment.backend), repository: String(executionBasis.repository), branch: String(executionBasis.branch), repositorySource, commitSha: String(executionBasis.commit_sha), manifest, plan });
-    await db.prepare("UPDATE campaigns SET status = 'queued', workflow_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(dispatched.workflowId, campaignId, workspaceId).run();
+    await db.prepare("UPDATE campaigns SET status = 'queued', workflow_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ? AND status = 'dispatching'").bind(dispatched.workflowId, campaignId, workspaceId).run();
   } catch (error) {
     await db.batch([
-      db.prepare("UPDATE campaigns SET status = 'dispatch_failed', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(campaignId, workspaceId),
-      db.prepare("UPDATE campaign_runs SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND workspace_id = ?").bind(campaignId, workspaceId),
+      db.prepare("UPDATE campaigns SET status = 'dispatch_failed', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ? AND status = 'dispatching'").bind(campaignId, workspaceId),
+      db.prepare("UPDATE campaign_runs SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND workspace_id = ? AND status IN ('queued','running')").bind(campaignId, workspaceId),
     ]);
     throw error;
   }
-  await recordAudit({ workspaceId, actorEmail: email, action: "campaign.approved", targetType: "campaign", targetId: campaignId, summary: `Approved ${plan.scenarios.length}-run campaign`, metadata: { concurrency: plan.concurrency, estimatedMinutes: plan.estimatedMinutes } });
-  return { campaignId, status: "queued", workflowId: dispatched.workflowId };
+  await recordAudit({ workspaceId, actorEmail: email, action: "campaign.approved", targetType: "campaign", targetId: campaignId, summary: `Approved ${plan.scenarios.length}-run campaign`, metadata: { concurrency: plan.concurrency, estimatedMinutes: plan.estimatedMinutes, reservedMinutes } });
+  const persistedCampaign = await db.prepare("SELECT status FROM campaigns WHERE id = ? AND workspace_id = ?").bind(campaignId, workspaceId).first<{ status: string }>();
+  return { campaignId, status: persistedCampaign?.status || "queued", workflowId: dispatched.workflowId };
 }
 
 export async function cancelCampaign(email: string, projectId: string, campaignId: string) {
@@ -247,40 +314,132 @@ export async function shareDecisionReport(email: string, projectId: string, repo
   return { reportId, token, path: `/reports/shared/${token}` };
 }
 
+type CandidateArtifactBasis = {
+  run_id: string;
+  artifact_ref: string;
+  artifact_key: string;
+  artifact_sha256: string;
+  artifact_size_bytes: number;
+  pr_status?: string;
+  pr_url?: string | null;
+  pr_number?: number | null;
+};
+
+async function verifiedCandidateArtifact(row: CandidateArtifactBasis): Promise<PublishableCandidateArtifact> {
+  const sizeBytes = Number(row.artifact_size_bytes);
+  const sha256 = String(row.artifact_sha256 || "").toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(sizeBytes) || sizeBytes < 1 || sizeBytes > MAX_CANDIDATE_ARTIFACT_BYTES) {
+    throw new Error("artifact_integrity_error: Candidate artifact metadata is invalid");
+  }
+  const store = (await getRuntimeEnv()).ARTIFACTS;
+  if (!store) throw new Error("artifacts_not_configured: Durable artifact storage is unavailable");
+  const object = await store.get(String(row.artifact_key || ""));
+  if (!object) throw new Error("artifact_not_found: Verified candidate artifact expired or is unavailable");
+  return verifyCandidateArtifact(await object.arrayBuffer(), { sha256, sizeBytes });
+}
+
+async function requireCandidateCommitBasis(
+  db: RuntimeDatabase,
+  workspaceId: string,
+  projectId: string,
+  runId: string,
+  commitSha: string,
+) {
+  const campaignRuns = await db.prepare("SELECT scenario_json FROM campaign_runs WHERE simulation_run_id = ? AND workspace_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 20").bind(runId, workspaceId, projectId).all<{ scenario_json: string }>();
+  for (const row of campaignRuns.results) {
+    if (typeof row.scenario_json !== "string" || row.scenario_json.length > 100_000) continue;
+    let modelVersionId = "";
+    try {
+      const scenario = JSON.parse(row.scenario_json) as { modelVersionId?: unknown };
+      modelVersionId = typeof scenario.modelVersionId === "string" ? scenario.modelVersionId : "";
+    } catch {
+      continue;
+    }
+    if (!modelVersionId) continue;
+    const model = await db.prepare("SELECT id FROM model_versions WHERE id = ? AND workspace_id = ? AND project_id = ? AND lower(commit_sha) = lower(?) AND status = 'approved' LIMIT 1").bind(modelVersionId, workspaceId, projectId, commitSha).first();
+    if (model) return;
+  }
+  throw new Error("candidate_invalid: Candidate commit is not the approved immutable model used by this observed run");
+}
+
+async function decisionCandidateBasis(
+  db: RuntimeDatabase,
+  workspaceId: string,
+  projectId: string,
+  reportId: string,
+  status: "ready" | "approved",
+) {
+  return db.prepare(
+    "SELECT dr.run_id, pc.patch_ref AS artifact_ref, ea.r2_key AS artifact_key, ea.sha256 AS artifact_sha256, ea.size_bytes AS artifact_size_bytes, ra.pr_status, ra.pr_url, ra.pr_number "
+    + "FROM decision_reports dr "
+    + "JOIN patch_candidates pc ON pc.id = dr.candidate_id AND pc.workspace_id = dr.workspace_id "
+    + "JOIN investigations i ON i.id = pc.investigation_id AND i.workspace_id = dr.workspace_id AND i.project_id = dr.project_id AND i.run_id = dr.run_id "
+    + "JOIN simulation_runs sr ON sr.id = dr.run_id AND sr.project_id = dr.project_id AND sr.status = 'verified' AND sr.evidence_kind = 'observed' "
+    + "JOIN evidence_artifacts ea ON ea.id = pc.patch_ref AND ea.workspace_id = dr.workspace_id AND ea.project_id = dr.project_id "
+    + (status === "approved" ? "JOIN report_approvals ra ON ra.report_id = dr.id AND ra.workspace_id = dr.workspace_id AND ra.artifact_ref = ea.id AND lower(ra.artifact_sha256) = lower(ea.sha256) AND ra.artifact_size_bytes = ea.size_bytes " : "LEFT JOIN report_approvals ra ON ra.report_id = dr.id AND ra.workspace_id = dr.workspace_id ")
+    + "WHERE dr.id = ? AND dr.workspace_id = ? AND dr.project_id = ? AND dr.status = ? AND ea.redacted = 1 "
+    + "AND ea.size_bytes BETWEEN 1 AND ? AND (ea.expires_at IS NULL OR julianday(ea.expires_at) > julianday('now')) LIMIT 1",
+  ).bind(reportId, workspaceId, projectId, status, MAX_CANDIDATE_ARTIFACT_BYTES).first<CandidateArtifactBasis>();
+}
+
 export async function approveDecisionReport(email: string, projectId: string, reportId: string, decisionNote: string) {
-  const { db, workspaceId } = await context(email, projectId, true); requireRole((await getSaasSnapshot(email)), ["owner", "admin"]);
+  const { db, workspaceId, snapshot } = await context(email, projectId, true); requireRole(snapshot, ["owner", "admin"]);
   if (decisionNote.trim().length < 10 || decisionNote.length > 500) throw new Error("report_invalid: A 10-500 character approval note is required");
-  const report = await db.prepare("SELECT id FROM decision_reports WHERE id = ? AND workspace_id = ? AND project_id = ? AND status = 'ready'").bind(reportId, workspaceId, projectId).first(); if (!report) throw new Error("report_not_found: A ready verification report is required");
+  const basis = await decisionCandidateBasis(db, workspaceId, projectId, reportId, "ready");
+  if (!basis) throw new Error("report_not_found: A ready report with current, redacted, observed evidence is required");
+  const candidate = await verifiedCandidateArtifact(basis);
+  await requireCandidateCommitBasis(db, workspaceId, projectId, basis.run_id, candidate.commitSha);
   const now = new Date().toISOString();
-  await db.batch([db.prepare("INSERT INTO report_approvals (report_id, workspace_id, approved_by, approved_at, decision_note) VALUES (?, ?, ?, ?, ?) ON CONFLICT(report_id) DO UPDATE SET approved_by=excluded.approved_by, approved_at=excluded.approved_at, decision_note=excluded.decision_note").bind(reportId, workspaceId, email, now, decisionNote.trim()), db.prepare("UPDATE decision_reports SET status = 'approved' WHERE id = ? AND workspace_id = ?").bind(reportId, workspaceId)]);
+  const approved = await db.batch([
+    db.prepare(
+      "INSERT INTO report_approvals (report_id, workspace_id, approved_by, approved_at, decision_note, artifact_ref, artifact_sha256, artifact_size_bytes) "
+      + "SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM decision_reports WHERE id = ? AND workspace_id = ? AND project_id = ? AND status = 'ready') "
+      + "ON CONFLICT(report_id) DO UPDATE SET approved_by = excluded.approved_by, approved_at = excluded.approved_at, decision_note = excluded.decision_note, artifact_ref = excluded.artifact_ref, artifact_sha256 = excluded.artifact_sha256, artifact_size_bytes = excluded.artifact_size_bytes",
+    ).bind(reportId, workspaceId, email, now, decisionNote.trim(), basis.artifact_ref, basis.artifact_sha256, basis.artifact_size_bytes, reportId, workspaceId, projectId),
+    db.prepare("UPDATE decision_reports SET status = 'approved' WHERE id = ? AND workspace_id = ? AND project_id = ? AND status = 'ready'").bind(reportId, workspaceId, projectId),
+  ]);
+  if (Number(approved[0]?.meta.changes || 0) !== 1 || Number(approved[1]?.meta.changes || 0) !== 1) throw new Error("report_conflict: This report changed while it was being approved");
   await recordAudit({ workspaceId, actorEmail: email, action: "report.approved", targetType: "decision_report", targetId: reportId, summary: "Approved the verified repair decision; no repository write performed" });
   return { reportId, status: "approved", approvedAt: now };
 }
 
 export async function publishDecisionDraftPr(email: string, projectId: string, reportId: string) {
-  const { db, workspaceId, project } = await context(email, projectId, true); requireRole((await getSaasSnapshot(email)), ["owner", "admin"]);
-  const row = await db.prepare("SELECT dr.report_json, dr.candidate_id, ra.pr_status, pc.patch_ref, ea.r2_key FROM decision_reports dr JOIN report_approvals ra ON ra.report_id=dr.id AND ra.workspace_id=dr.workspace_id JOIN patch_candidates pc ON pc.id=dr.candidate_id AND pc.workspace_id=dr.workspace_id JOIN evidence_artifacts ea ON ea.id=pc.patch_ref AND ea.workspace_id=dr.workspace_id WHERE dr.id=? AND dr.workspace_id=? AND dr.project_id=? AND dr.status='approved' LIMIT 1").bind(reportId, workspaceId, projectId).first<Record<string, unknown>>();
+  const { db, workspaceId, project, snapshot } = await context(email, projectId, true); requireRole(snapshot, ["owner", "admin"]);
+  const row = await decisionCandidateBasis(db, workspaceId, projectId, reportId, "approved");
   if (!row) throw new Error("report_not_found: Approve a verified report before publishing a draft pull request");
+  if (row.pr_status === "published" && row.pr_url && Number.isInteger(row.pr_number)) return { reportId, draft: true, url: row.pr_url, number: row.pr_number };
+  if (row.pr_status !== "not_requested") throw new Error("report_conflict: Draft pull request publication is already in progress");
+  if (project.repository_verified !== 1) throw new Error("repository_not_connected: Reconnect and verify this repository before publishing");
+  const evidence = await verifiedCandidateArtifact(row);
+  await requireCandidateCommitBasis(db, workspaceId, projectId, row.run_id, evidence.commitSha);
   const [composio, githubApp] = await Promise.all([
     db.prepare("SELECT c.connected_account_id FROM composio_github_repositories r JOIN composio_connections c ON c.id=r.connection_id AND c.workspace_id=r.workspace_id WHERE r.workspace_id=? AND lower(r.full_name)=lower(?) AND c.status='active' LIMIT 1").bind(workspaceId, String(project.repository)).first<Record<string, unknown>>(),
     db.prepare("SELECT gr.installation_id, gi.permissions_json FROM github_workspace_repositories gr JOIN github_workspace_installations gi ON gi.installation_id=gr.installation_id AND gi.workspace_id=gr.workspace_id WHERE gr.workspace_id=? AND lower(gr.full_name)=lower(?) AND gi.status='active' LIMIT 1").bind(workspaceId, String(project.repository)).first<Record<string, unknown>>(),
   ]);
   if (!composio?.connected_account_id && !githubApp?.installation_id) throw new Error("repository_not_connected: Reconnect this repository through Composio or the fallback GitHub App");
-  const bucket = (await getRuntimeEnv()).ARTIFACTS; if (!bucket) throw new Error("artifacts_not_configured: Durable artifact storage is unavailable");
-  const object = await bucket.get(String(row.r2_key)); if (!object) throw new Error("artifact_not_found: Verified candidate artifact expired or is unavailable"); const evidence = JSON.parse(await object.text()) as { files?: Array<{ path: string; content: string }>; commitSha?: string; strategy?: string };
-  if (!evidence.files?.length || !evidence.commitSha) throw new Error("candidate_invalid: Candidate does not contain bounded publishable files");
-  const [owner, repository] = String(project.repository).split("/"); if (!owner || !repository) throw new Error("repository_invalid: GitHub repository name is invalid"); const branch = `worldmodel/${reportId.replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`;
-  const publishInput = { owner, repository, baseBranch: String(project.branch), baseSha: evidence.commitSha, headBranch: branch, title: `draft: verified ${evidence.strategy || "repair"} candidate`, body: `WorldModel verification report ${reportId}. This is a draft and must not be merged without human review.`, files: evidence.files };
+  const [owner, repository] = String(project.repository).split("/"); if (!owner || !repository) throw new Error("repository_invalid: GitHub repository name is invalid");
+  const branchReport = reportId.replace(/[^a-z0-9_-]/gi, "-").toLowerCase().slice(0, 100);
+  const branchSuffix = crypto.randomUUID().replaceAll("-", "");
+  const branch = `worldmodel/${branchReport}-${branchSuffix}`;
+  const publishInput = { owner, repository, baseBranch: String(project.branch), baseSha: evidence.commitSha, headBranch: branch, title: `draft: verified ${evidence.strategy || "repair"} candidate`, body: `WorldModel verification report ${reportId}. This is a draft and must not be merged without human review.`, files: evidence.files, freshBranchFromBase: true };
+  const claimed = await db.prepare("UPDATE report_approvals SET pr_status = 'publishing' WHERE report_id = ? AND workspace_id = ? AND pr_status = 'not_requested' AND artifact_ref = ? AND lower(artifact_sha256) = lower(?) AND artifact_size_bytes = ?").bind(reportId, workspaceId, row.artifact_ref, row.artifact_sha256, row.artifact_size_bytes).run();
+  if (Number(claimed.meta.changes || 0) !== 1) throw new Error("report_conflict: Draft pull request publication is already in progress");
   let published: { number: number; html_url: string; draft: boolean };
-  if (composio?.connected_account_id) {
-    published = await publishComposioGithubDraftFiles({ connectedAccountId: String(composio.connected_account_id), ...publishInput });
-  } else {
-    const permissions = JSON.parse(String(githubApp?.permissions_json || "{}"));
-    if (permissions.contents !== "write" || permissions.pull_requests !== "write") throw new Error("github_unauthorized: GitHub App Contents and Pull requests write permissions are required");
-    published = await publishGithubDraftFiles({ installationId: String(githubApp?.installation_id), ...publishInput });
+  try {
+    if (composio?.connected_account_id) {
+      published = await publishComposioGithubDraftFiles({ connectedAccountId: String(composio.connected_account_id), ...publishInput });
+    } else {
+      const permissions = JSON.parse(String(githubApp?.permissions_json || "{}"));
+      if (permissions.contents !== "write" || permissions.pull_requests !== "write") throw new Error("github_unauthorized: GitHub App Contents and Pull requests write permissions are required");
+      published = await publishGithubDraftFiles({ installationId: String(githubApp?.installation_id), ...publishInput });
+    }
+    if (!published.draft) throw new Error("github_invalid_response: GitHub did not confirm a draft pull request");
+  } catch (error) {
+    await db.prepare("UPDATE report_approvals SET pr_status = 'not_requested' WHERE report_id = ? AND workspace_id = ? AND pr_status = 'publishing'").bind(reportId, workspaceId).run().catch(() => undefined);
+    throw error;
   }
-  if (!published.draft) throw new Error("github_invalid_response: GitHub did not confirm a draft pull request");
-  await db.prepare("UPDATE report_approvals SET pr_status='published', pr_url=?, pr_number=?, published_at=? WHERE report_id=? AND workspace_id=?").bind(published.html_url, published.number, new Date().toISOString(), reportId, workspaceId).run();
+  const stored = await db.prepare("UPDATE report_approvals SET pr_status='published', pr_url=?, pr_number=?, published_at=? WHERE report_id=? AND workspace_id=? AND pr_status = 'publishing' AND artifact_ref = ? AND lower(artifact_sha256) = lower(?) AND artifact_size_bytes = ?").bind(published.html_url, published.number, new Date().toISOString(), reportId, workspaceId, row.artifact_ref, row.artifact_sha256, row.artifact_size_bytes).run();
+  if (Number(stored.meta.changes || 0) !== 1) throw new Error("report_conflict: The approved artifact changed while the draft pull request was published");
   await recordAudit({ workspaceId, actorEmail: email, action: "report.draft_pr_published", targetType: "decision_report", targetId: reportId, summary: `Explicitly published draft pull request #${published.number}`, metadata: { url: published.html_url } });
   return { reportId, draft: true, url: published.html_url, number: published.number };
 }

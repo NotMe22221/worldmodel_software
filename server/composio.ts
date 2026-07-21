@@ -165,11 +165,30 @@ function utf8Base64(value: string) {
   return btoa(Array.from(new TextEncoder().encode(value), (byte) => String.fromCharCode(byte)).join(""));
 }
 
-export async function publishComposioGithubDraftFiles(input: { connectedAccountId: string; owner: string; repository: string; baseBranch: string; baseSha: string; headBranch: string; title: string; body: string; files: Array<{ path: string; content: string }> }) {
-  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(input.owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(input.repository) || !/^[a-f0-9]{40}$/i.test(input.baseSha) || !/^worldmodel\/[a-z0-9._/-]{3,180}$/i.test(input.headBranch)) throw new Error("Composio draft branch basis is invalid");
+export async function publishComposioGithubDraftFiles(input: { connectedAccountId: string; owner: string; repository: string; baseBranch: string; baseSha: string; headBranch: string; title: string; body: string; files: Array<{ path: string; content: string }>; freshBranchFromBase?: boolean }) {
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(input.owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(input.repository) || !/^[A-Za-z0-9._/-]{1,120}$/.test(input.baseBranch) || !/^[a-f0-9]{40}$/i.test(input.baseSha) || !/^worldmodel\/[a-z0-9._/-]{3,180}$/i.test(input.headBranch)) throw new Error("Composio draft branch basis is invalid");
   if (!input.files.length || input.files.length > 30) throw new Error("Composio draft requires 1-30 bounded files");
-  for (const file of input.files) if (!/^[A-Za-z0-9_.\/-]{1,240}$/.test(file.path) || file.path.startsWith("/") || file.path.split("/").includes("..") || file.path.startsWith(".github/workflows/") || file.content.length > 1_000_000) throw new Error(`Composio draft file is prohibited: ${file.path}`);
+  for (const file of input.files) if (!/^[A-Za-z0-9_.\/-]{1,240}$/.test(file.path) || file.path.startsWith("/") || file.path.split("/").includes("..") || file.path.toLowerCase().startsWith(".github/workflows/") || file.content.length > 1_000_000) throw new Error(`Composio draft file is prohibited: ${file.path}`);
   const root = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}`;
+  if (input.freshBranchFromBase) {
+    const baseCommit = record((await executeGithubProxy(input.connectedAccountId, `${root}/git/commits/${input.baseSha}`, "GET")).data);
+    const baseTree = record(baseCommit.tree);
+    if (text(baseCommit.sha).toLowerCase() !== input.baseSha.toLowerCase() || !/^[a-f0-9]{40}$/i.test(text(baseTree.sha))) throw new Error("Composio returned an invalid approved base commit");
+    const treeEntries: Array<{ path: string; mode: "100644"; type: "blob"; sha: string }> = [];
+    for (const file of input.files) {
+      const blob = record((await executeGithubProxy(input.connectedAccountId, `${root}/git/blobs`, "POST", { content: utf8Base64(file.content), encoding: "base64" }, [201])).data);
+      if (!/^[a-f0-9]{40}$/i.test(text(blob.sha))) throw new Error("Composio returned an invalid candidate blob");
+      treeEntries.push({ path: file.path, mode: "100644", type: "blob", sha: text(blob.sha) });
+    }
+    const tree = record((await executeGithubProxy(input.connectedAccountId, `${root}/git/trees`, "POST", { base_tree: text(baseTree.sha), tree: treeEntries }, [201])).data);
+    if (!/^[a-f0-9]{40}$/i.test(text(tree.sha))) throw new Error("Composio returned an invalid candidate tree");
+    const commit = record((await executeGithubProxy(input.connectedAccountId, `${root}/git/commits`, "POST", { message: "fix: WorldModel verified repair candidate", tree: text(tree.sha), parents: [input.baseSha] }, [201])).data);
+    if (!/^[a-f0-9]{40}$/i.test(text(commit.sha))) throw new Error("Composio returned an invalid candidate commit");
+    await executeGithubProxy(input.connectedAccountId, `${root}/git/refs`, "POST", { ref: `refs/heads/${input.headBranch}`, sha: text(commit.sha) }, [201]);
+    const created = record((await executeGithubProxy(input.connectedAccountId, `${root}/pulls`, "POST", { title: input.title, head: input.headBranch, base: input.baseBranch, body: input.body, draft: true, maintainer_can_modify: true }, [201])).data);
+    if (typeof created.number !== "number" || !text(created.html_url)) throw new Error("Composio GitHub proxy returned an invalid draft pull request");
+    return { number: created.number, html_url: text(created.html_url), draft: created.draft === true };
+  }
   const headPath = input.headBranch.split("/").map(encodeURIComponent).join("/");
   const existingHead = await executeGithubProxy(input.connectedAccountId, `${root}/git/ref/heads/${headPath}`, "GET", undefined, [200, 404]);
   if (Number(existingHead.status) === 404) await executeGithubProxy(input.connectedAccountId, `${root}/git/refs`, "POST", { ref: `refs/heads/${input.headBranch}`, sha: input.baseSha });
@@ -242,6 +261,27 @@ export async function getComposioGithubCommit(connectedAccountId: string, userId
   const commitSha = findCommitSha(basis);
   if (!commitSha) throw new Error("Composio could not resolve an immutable GitHub commit");
   return commitSha;
+}
+
+export async function getComposioGithubFileAtCommit(connectedAccountId: string, fullName: string, filePath: string, commitSha: string) {
+  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(fullName);
+  if (!match || !/^[A-Za-z0-9_.\/-]{1,240}$/.test(filePath) || filePath.startsWith("/") || filePath.split("/").includes("..") || !/^[a-f0-9]{40}$/i.test(commitSha)) throw new Error("GitHub workflow revision is invalid");
+  const root = `https://api.github.com/repos/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}`;
+  const file = record((await executeGithubProxy(connectedAccountId, `${root}/contents/${filePath.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(commitSha)}`, "GET")).data);
+  if (text(file.type) !== "file" || text(file.encoding) !== "base64" || typeof file.content !== "string" || !Number.isSafeInteger(file.size) || Number(file.size) < 1 || Number(file.size) > 100_000) throw new Error("GitHub workflow file is invalid");
+  let content: Uint8Array;
+  try {
+    const binary = atob(file.content.replace(/\s/g, ""));
+    content = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    throw new Error("GitHub workflow file is invalid");
+  }
+  if (content.byteLength !== file.size) throw new Error("GitHub workflow file size is invalid");
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(content);
+  } catch {
+    throw new Error("GitHub workflow file encoding is invalid");
+  }
 }
 
 export async function getComposioGithubArchiveUrl(connectedAccountId: string, fullName: string, commitSha: string) {

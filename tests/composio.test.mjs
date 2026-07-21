@@ -8,6 +8,11 @@ process.env.COMPOSIO_GITHUB_AUTH_CONFIG_ID = "ac_contract_github";
 process.env.WORLDMODEL_PUBLIC_ORIGIN = "http://localhost:3100";
 
 const COMMIT_SHA = "5f7d1f6d9b8ab313f29d73f6054f27a0d2d7e9b1";
+const BASE_TREE_SHA = "b".repeat(40);
+const BLOB_SHA = "c".repeat(40);
+const CANDIDATE_TREE_SHA = "d".repeat(40);
+const CANDIDATE_COMMIT_SHA = "e".repeat(40);
+const EXPECTED_WORKFLOW = "name: WorldModel verified runner\n";
 
 function attemptDatabase() {
   const sqlite = new DatabaseSync(":memory:");
@@ -42,6 +47,11 @@ function providerFetch() {
     if (url.pathname.endsWith("/tools/execute/proxy")) {
       assert.equal(body.connected_account_id, "ca_contract");
       if (body.endpoint.endsWith(`/tarball/${COMMIT_SHA}`)) return Response.json({ status: 200, data: null, binary_data: { url: "https://downloads.example.test/repository.tar.gz?signature=fixture", content_type: "application/gzip", size: 4096, expires_at: new Date(Date.now() + 300_000).toISOString() } });
+      if (body.endpoint.includes("/.github/workflows/worldmodel-proj_verified.yml") && body.method === "GET") return Response.json({ status: 200, data: { type: "file", encoding: "base64", content: Buffer.from(EXPECTED_WORKFLOW).toString("base64"), size: Buffer.byteLength(EXPECTED_WORKFLOW) } });
+      if (body.endpoint.endsWith(`/git/commits/${COMMIT_SHA}`) && body.method === "GET") return Response.json({ status: 200, data: { sha: COMMIT_SHA, tree: { sha: BASE_TREE_SHA } } });
+      if (body.endpoint.endsWith("/git/blobs") && body.method === "POST") return Response.json({ status: 201, data: { sha: BLOB_SHA } });
+      if (body.endpoint.endsWith("/git/trees") && body.method === "POST") return Response.json({ status: 201, data: { sha: CANDIDATE_TREE_SHA } });
+      if (body.endpoint.endsWith("/git/commits") && body.method === "POST") return Response.json({ status: 201, data: { sha: CANDIDATE_COMMIT_SHA } });
       if (body.endpoint.includes("/git/ref/heads/") && body.method === "GET") return Response.json({ status: 404, data: { message: "Not Found" } });
       if (body.endpoint.endsWith("/git/refs") && body.method === "POST") return Response.json({ status: 201, data: { ref: body.body.ref } });
       if (body.endpoint.includes("/contents/") && body.method === "GET") return Response.json({ status: 404, data: { message: "Not Found" } });
@@ -70,7 +80,7 @@ test("Composio client creates a hosted link, verifies the account, filters repos
   const provider = providerFetch();
   globalThis.fetch = provider.fetch;
   try {
-    const { createComposioGithubLink, getComposioConnectedAccount, getComposioGithubArchiveUrl, getComposioGithubIdentity, getComposioGithubTree, listComposioGithubRepositories, publishComposioGithubDraftFiles } = await import("../server/composio.ts");
+    const { createComposioGithubLink, getComposioConnectedAccount, getComposioGithubArchiveUrl, getComposioGithubFileAtCommit, getComposioGithubIdentity, getComposioGithubTree, listComposioGithubRepositories, publishComposioGithubDraftFiles } = await import("../server/composio.ts");
     const composioUserId = `wm_${"a".repeat(40)}`;
     const started = await createComposioGithubLink(composioUserId, "http://127.0.0.1:3100/api/integrations/composio/github/callback?state=secure-state");
     assert.equal(started.redirectUrl, "https://connect.composio.dev/link/lt_contract");
@@ -89,6 +99,7 @@ test("Composio client creates a hosted link, verifies the account, filters repos
     const archive = await getComposioGithubArchiveUrl(account.id, repositories[0].fullName, tree.commitSha);
     assert.match(archive.url, /^https:\/\/downloads\.example\.test\//);
     assert.equal(archive.size, 4096);
+    assert.equal(await getComposioGithubFileAtCommit(account.id, repositories[0].fullName, ".github/workflows/worldmodel-proj_verified.yml", tree.commitSha), EXPECTED_WORKFLOW);
     const published = await publishComposioGithubDraftFiles({ connectedAccountId: account.id, owner: "octocat", repository: "Hello-World", baseBranch: "master", baseSha: tree.commitSha, headBranch: "worldmodel/report-contract", title: "draft: verified repair", body: "Fixture verification report", files: [{ path: "src/repair.ts", content: "export const repaired = true;\n" }] });
     assert.deepEqual(published, { number: 42, html_url: "https://github.com/octocat/Hello-World/pull/42", draft: true });
     const fileWrite = provider.calls.find((call) => call.body?.method === "PUT" && call.body?.endpoint?.includes("/contents/src/repair.ts"));
@@ -96,6 +107,22 @@ test("Composio client creates a hosted link, verifies the account, filters repos
     assert.ok(provider.calls.some((call) => call.body?.method === "POST" && call.body?.endpoint?.endsWith("/pulls") && call.body?.body?.draft === true));
     assert.ok(provider.calls.some((call) => call.url.endsWith("GITHUB_GET_A_COMMIT")));
     assert.ok(provider.calls.some((call) => call.url.endsWith("GITHUB_GET_A_TREE")));
+
+    const freshCallsStart = provider.calls.length;
+    const freshPublished = await publishComposioGithubDraftFiles({ connectedAccountId: account.id, owner: "octocat", repository: "Hello-World", baseBranch: "master", baseSha: tree.commitSha, headBranch: "worldmodel/report-contract-fresh-1234567890", title: "draft: verified repair", body: "Fixture verification report", files: [{ path: "src/repair.ts", content: "export const repaired = true;\n" }], freshBranchFromBase: true });
+    assert.deepEqual(freshPublished, { number: 42, html_url: "https://github.com/octocat/Hello-World/pull/42", draft: true });
+    const freshCalls = provider.calls.slice(freshCallsStart).map((call) => call.body).filter((body) => body?.endpoint);
+    assert.equal(freshCalls.some((body) => body.method === "GET" && body.endpoint.includes("/git/ref/heads/")), false);
+    assert.equal(freshCalls.some((body) => body.endpoint.includes("/contents/src/repair.ts")), false);
+    const freshTree = freshCalls.find((body) => body.method === "POST" && body.endpoint.endsWith("/git/trees"));
+    assert.equal(freshTree.body.base_tree, BASE_TREE_SHA);
+    assert.deepEqual(freshTree.body.tree, [{ path: "src/repair.ts", mode: "100644", type: "blob", sha: BLOB_SHA }]);
+    const freshCommit = freshCalls.find((body) => body.method === "POST" && body.endpoint.endsWith("/git/commits"));
+    assert.equal(freshCommit.body.tree, CANDIDATE_TREE_SHA);
+    assert.deepEqual(freshCommit.body.parents, [COMMIT_SHA]);
+    const freshRef = freshCalls.find((body) => body.method === "POST" && body.endpoint.endsWith("/git/refs"));
+    assert.equal(freshRef.body.sha, CANDIDATE_COMMIT_SHA);
+    assert.equal(freshRef.body.ref, "refs/heads/worldmodel/report-contract-fresh-1234567890");
   } finally { globalThis.fetch = originalFetch; }
 });
 

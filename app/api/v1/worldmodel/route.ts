@@ -1,4 +1,5 @@
-import { approveCampaign, approveDecisionReport, approveModelVersion, assistantMessage, cancelCampaign, createJourney, createModelVersion, productSnapshot, publishDecisionDraftPr, rescanRepository, runEvents, saveEnvironment, shareDecisionReport, startInvestigation } from "@/db/product";
+import { approveCampaign, approveDecisionReport, approveModelVersion, assistantMessage, cancelCampaign, createJourney, productSnapshot, publishDecisionDraftPr, rescanRepository, runEvents, saveEnvironment, shareDecisionReport, startInvestigation } from "@/db/product";
+import { readBoundedRequestText, RequestBodyTooLargeError } from "@/server/bounded-request-body";
 import { requestIdentity } from "@/server/request-identity";
 
 function errorResponse(error: unknown, correlationId: string) {
@@ -6,7 +7,7 @@ function errorResponse(error: unknown, correlationId: string) {
   const separator = raw.indexOf(":");
   const code = separator > 0 ? raw.slice(0, separator).trim() : "internal_error";
   const message = separator > 0 ? raw.slice(separator + 1).trim() : raw;
-  const status = code.endsWith("_not_found") ? 404 : code.includes("not_configured") || code === "project_not_ready" ? 409 : code.includes("invalid") ? 400 : code.includes("unauthorized") ? 403 : code.includes("request_failed") ? 502 : 500;
+  const status = code === "unauthorized" ? 401 : code === "request_too_large" ? 413 : code.endsWith("_not_found") ? 404 : code.includes("not_configured") || code === "project_not_ready" || code.includes("limit") ? 409 : code.includes("invalid") ? 400 : code.includes("unauthorized") ? 403 : code.includes("request_failed") ? 502 : 500;
   return Response.json({ error: { code, message, retriable: status >= 500 || code === "runner_not_configured", correlationId } }, { status, headers: { "x-correlation-id": correlationId } });
 }
 
@@ -29,13 +30,13 @@ export async function POST(request: Request) {
   const email = await requestIdentity(request);
   if (!email) return errorResponse(new Error("unauthorized: Authentication is required"), correlationId);
   let body: Record<string, unknown>;
-  try { body = await request.json(); } catch { return errorResponse(new Error("request_invalid: A valid JSON body is required"), correlationId); }
+  try { body = JSON.parse(await readBoundedRequestText(request, 262_144)); }
+  catch (error) { return errorResponse(error instanceof RequestBodyTooLargeError ? new Error("request_too_large: Request body exceeds 256 KB") : new Error("request_invalid: A valid JSON body is required"), correlationId); }
   const projectId = typeof body.projectId === "string" ? body.projectId : "";
   try {
     if (!projectId) throw new Error("request_invalid: projectId is required");
     let result: unknown;
     switch (body.action) {
-      case "create-model": result = await createModelVersion(email, projectId, { commitSha: String(body.commitSha || ""), graph: body.graph, confidence: Number(body.confidence || 0) }); break;
       case "approve-model": result = await approveModelVersion(email, projectId, String(body.modelVersionId || ""), body.overrides); break;
       case "save-environment": result = await saveEnvironment(email, projectId, { modelVersionId: String(body.modelVersionId || ""), backend: String(body.backend || ""), manifest: body.manifest, approve: body.approve === true }); break;
       case "create-journey": result = await createJourney(email, projectId, body.definition, String(body.source || "user"), body.approve === true); break;

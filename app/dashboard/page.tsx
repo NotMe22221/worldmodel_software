@@ -1730,13 +1730,13 @@ export default function Dashboard() {
               <section className="integration-grid">
                 <article className="saas-card integration-card composio-card">
                   <header>
-                    <i>⌘</i>
+                    <i aria-hidden="true">⌘</i>
                     <div>
-                      <h3>GitHub via Composio</h3>
+                      <h2>GitHub via Composio</h2>
                       <p>Hosted OAuth, repository discovery, immutable commit mapping, and approved draft PR access.</p>
                     </div>
                     <span className={activeComposioConnections.length ? "connected" : "available"}>
-                      {activeComposioConnections.length ? "Connected" : data.configuration.composio.githubConfigured ? "Ready" : "Platform setup"}
+                      {activeComposioConnections.length ? "Connected" : data.configuration.composio.githubConfigured ? "Configured" : "Platform setup"}
                     </span>
                   </header>
                   {activeComposioConnections.length ? (
@@ -1812,7 +1812,11 @@ export default function Dashboard() {
                         <div className="integration-setup-note">
                           <b>Deployment setup required</b>
                           <small>The app is deployed from GitHub, but runtime repository access needs a Composio API key and GitHub auth configuration in Vercel.</small>
-                          {canAdminWorkspace && <button className="secondary-integration" onClick={() => (location.href = "/settings/providers")}>View platform setup instructions →</button>}
+                          {canAdminWorkspace ? (
+                            <a className="secondary-integration" href="/settings/providers">View platform setup instructions →</a>
+                          ) : (
+                            <small>Ask a workspace owner or administrator to finish the deployment setup.</small>
+                          )}
                         </div>
                       )}
                       {data.configuration.composio.githubConfigured && !canAdminWorkspace && <small>Ask a workspace owner or administrator to connect GitHub.</small>}
@@ -1821,9 +1825,9 @@ export default function Dashboard() {
                 </article>
                 <article className="saas-card integration-card">
                   <header>
-                    <i>＄</i>
+                    <i aria-hidden="true">＄</i>
                     <div>
-                      <h3>Stripe Billing</h3>
+                      <h2>Stripe Billing</h2>
                       <p>
                         Hosted checkout, subscription entitlements, and signed
                         webhooks.

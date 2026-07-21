@@ -1,5 +1,6 @@
 import { ApiAccessError, authenticateApiRequest, listApiRuns } from "@/db/developer-api";
 import { createSimulationRunForWorkspace } from "@/db/saas";
+import { readBoundedRequestText, RequestBodyTooLargeError } from "@/server/bounded-request-body";
 
 function apiFailure(error: unknown, headers: Record<string, string> = {}) {
   if (error instanceof ApiAccessError) return Response.json({ error: { code: error.status === 429 ? "rate_limit_exceeded" : error.status === 403 ? "insufficient_scope" : error.status === 402 ? "subscription_required" : "unauthorized", message: error.message } }, { status: error.status, headers: error.headers });
@@ -19,11 +20,9 @@ export async function POST(request: Request) {
   let context;
   try { context = await authenticateApiRequest(request, "runs:write"); }
   catch (error) { return apiFailure(error); }
-  const contentLength = Number(request.headers.get("content-length") || 0);
-  if (contentLength > 16_384) return Response.json({ error: { code: "invalid_request", message: "Request body exceeds 16 KB" } }, { status: 413, headers: context.rateHeaders });
   let payload: { action?: string; projectId?: string; scenario?: string; runId?: string; [key: string]: unknown };
-  try { payload = await request.json(); }
-  catch { return Response.json({ error: { code: "invalid_request", message: "A valid JSON request body is required" } }, { status: 400, headers: context.rateHeaders }); }
+  try { payload = JSON.parse(await readBoundedRequestText(request, 16_384)); }
+  catch (error) { return Response.json({ error: { code: error instanceof RequestBodyTooLargeError ? "request_too_large" : "invalid_request", message: error instanceof RequestBodyTooLargeError ? "Request body exceeds 16 KB" : "A valid JSON request body is required" } }, { status: error instanceof RequestBodyTooLargeError ? 413 : 400, headers: context.rateHeaders }); }
   try {
     if (payload.action === "observe" || payload.action === "verify") {
       return Response.json({ error: { code: "signed_runner_required", message: "API keys cannot promote self-attested metrics to verified evidence. Use the project GitHub Actions workflow and signed runner evidence exchange." } }, { status: 403, headers: context.rateHeaders });

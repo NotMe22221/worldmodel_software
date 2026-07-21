@@ -263,6 +263,8 @@ export const subscriptions = sqliteTable("subscriptions", {
   status: text("status").notNull().default("trialing"),
   plan: text("plan").notNull().default("trial"),
   currentPeriodEnd: text("current_period_end"),
+  stripeEventCreated: integer("stripe_event_created").notNull().default(0),
+  stripeEventPriority: integer("stripe_event_priority").notNull().default(0),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

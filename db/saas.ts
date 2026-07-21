@@ -11,6 +11,11 @@ async function getD1() {
 
 type ScenarioKey = "traffic" | "database" | "payments";
 
+const MODELED_RUN_MINUTES = 2;
+
+export const resetWorkspaceUsagePeriodSql = "UPDATE workspaces SET simulation_minutes = 0, usage_period_start = ? WHERE id = ? AND (usage_period_start IS NULL OR usage_period_start <> ?)";
+export const reserveModeledRunMinutesSql = "UPDATE workspaces SET simulation_minutes = simulation_minutes + ? WHERE id = ? AND usage_period_start = ? AND simulation_minutes + ? <= ?";
+
 type CustomerWorkspace = { id: string; name: string; workspace_mode: string };
 
 function normalizeOwnerEmail(email: string) {
@@ -131,6 +136,23 @@ async function ensureSupportOperationsColumns(db: Awaited<ReturnType<typeof getD
   if (!existing.has("resolved_at")) await db.prepare("ALTER TABLE support_cases ADD COLUMN resolved_at TEXT").run();
 }
 
+async function ensureSubscriptionEventColumns(db: Awaited<ReturnType<typeof getD1>>) {
+  const columns = await db.prepare("PRAGMA table_info(subscriptions)").all<{ name: string }>();
+  const existing = new Set(columns.results.map((column) => column.name));
+  const additions: Array<[string, string]> = [
+    ["stripe_event_created", "INTEGER NOT NULL DEFAULT 0"],
+    ["stripe_event_priority", "INTEGER NOT NULL DEFAULT 0"],
+  ];
+  for (const [name, type] of additions) {
+    if (existing.has(name)) continue;
+    try {
+      await db.prepare(`ALTER TABLE subscriptions ADD COLUMN ${name} ${type}`).run();
+    } catch (error) {
+      if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
+  }
+}
+
 export async function ensureSaasSchema() {
   const db = await getD1();
   await db.batch([
@@ -165,7 +187,7 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS composio_github_repositories (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES composio_connections(id), workspace_id TEXT NOT NULL REFERENCES workspaces(id), repository_id TEXT NOT NULL, full_name TEXT NOT NULL, default_branch TEXT NOT NULL, is_private INTEGER NOT NULL DEFAULT 1, html_url TEXT NOT NULL, selected INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS composio_repositories_connection_repo_idx ON composio_github_repositories(connection_id, repository_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS composio_repositories_workspace_idx ON composio_github_repositories(workspace_id, selected, full_name)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS subscriptions (workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id), stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT NOT NULL DEFAULT 'trialing', plan TEXT NOT NULL DEFAULT 'trial', current_period_end TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS subscriptions (workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id), stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT NOT NULL DEFAULT 'trialing', plan TEXT NOT NULL DEFAULT 'trial', current_period_end TEXT, stripe_event_created INTEGER NOT NULL DEFAULT 0, stripe_event_priority INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS billing_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS github_installations_workspace_idx ON github_installations(workspace_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS github_repositories_workspace_idx ON github_repositories(workspace_id)"),
@@ -195,6 +217,7 @@ export async function ensureSaasSchema() {
   await ensureRunEvidenceColumns(db);
   await ensureRepairProposalColumns(db);
   await ensureSupportOperationsColumns(db);
+  await ensureSubscriptionEventColumns(db);
 }
 
 export async function seedWorkspace(email: string, preferredName?: string) {
@@ -215,9 +238,16 @@ export async function getSaasSnapshot(email: string) {
   if (!workspace) throw new Error("Workspace not found");
   const period = usagePeriod();
   if (String(workspace.usage_period_start || "") !== period.start) {
-    await db.prepare("UPDATE workspaces SET simulation_minutes = 0, usage_period_start = ? WHERE id = ?").bind(period.start, workspace.id).run();
-    workspace.simulation_minutes = 0;
-    workspace.usage_period_start = period.start;
+    const reset = await db.prepare(resetWorkspaceUsagePeriodSql).bind(period.start, workspace.id, period.start).run();
+    if (Number(reset.meta.changes || 0) === 1) {
+      workspace.simulation_minutes = 0;
+      workspace.usage_period_start = period.start;
+    } else {
+      const currentUsage = await db.prepare("SELECT simulation_minutes, usage_period_start FROM workspaces WHERE id = ?").bind(workspace.id).first<{ simulation_minutes: number; usage_period_start: string | null }>();
+      if (!currentUsage) throw new Error("Workspace not found");
+      workspace.simulation_minutes = currentUsage.simulation_minutes;
+      workspace.usage_period_start = currentUsage.usage_period_start;
+    }
   }
   const projects = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC").bind(workspace.id).all();
   const runs = await db.prepare("SELECT r.*, p.name AS project_name, p.source_kind, p.repository_verified FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 20").bind(workspace.id).all();
@@ -291,9 +321,16 @@ export async function getWorkspaceEntitlements(workspaceId: string) {
   if (!workspace) throw new Error("Workspace not found");
   const period = usagePeriod();
   if (String(workspace.usage_period_start || "") !== period.start) {
-    await db.prepare("UPDATE workspaces SET simulation_minutes = 0, usage_period_start = ? WHERE id = ?").bind(period.start, workspaceId).run();
-    workspace.simulation_minutes = 0;
-    workspace.usage_period_start = period.start;
+    const reset = await db.prepare(resetWorkspaceUsagePeriodSql).bind(period.start, workspaceId, period.start).run();
+    if (Number(reset.meta.changes || 0) === 1) {
+      workspace.simulation_minutes = 0;
+      workspace.usage_period_start = period.start;
+    } else {
+      const currentUsage = await db.prepare("SELECT simulation_minutes, usage_period_start FROM workspaces WHERE id = ?").bind(workspaceId).first<{ simulation_minutes: number; usage_period_start: string | null }>();
+      if (!currentUsage) throw new Error("Workspace not found");
+      workspace.simulation_minutes = currentUsage.simulation_minutes;
+      workspace.usage_period_start = currentUsage.usage_period_start;
+    }
   }
   const subscription = await db.prepare("SELECT status, plan, current_period_end, updated_at FROM subscriptions WHERE workspace_id = ?").bind(workspaceId).first();
   const entitlements = resolveEntitlements({ workspace, subscription });
@@ -303,19 +340,34 @@ export async function getWorkspaceEntitlements(workspaceId: string) {
   return entitlements;
 }
 
-export async function createProject(email: string, input: { name: string; repository: string; branch: string; sourceKind?: "manual" | "github"; repositoryVerified?: boolean }) {
-  const snapshot = await getSaasSnapshot(email);
-  if (String(snapshot.workspace.workspace_mode) === "sample") throw new Error("Create a clean customer workspace before connecting a real repository");
-  requireRole(snapshot, ["owner", "admin", "member"]);
-  requireWriteEntitlement(snapshot.entitlements);
-  if (snapshot.projects.length >= snapshot.entitlements.limits.projects) throw new Error(`${snapshot.entitlements.planName} plan project limit reached`);
-  const id = `proj_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+type CreateProjectInput = { name: string; repository: string; branch: string; sourceKind?: "manual" | "github"; repositoryVerified?: boolean };
+
+export async function createProjectForWorkspace(workspaceId: string, actorEmail: string, input: CreateProjectInput) {
+  await ensureSaasSchema();
   const db = await getD1();
+  const actor = normalizeOwnerEmail(actorEmail);
+  const membership = await db.prepare("SELECT w.workspace_mode, m.role FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id AND lower(m.email) = ? WHERE w.id = ? LIMIT 1").bind(actor, workspaceId).first<{ workspace_mode: string; role: string }>();
+  if (!membership || !["owner", "admin", "member"].includes(membership.role)) throw new Error("Workspace role does not allow this action");
+  if (membership.workspace_mode === "sample") throw new Error("Create a clean customer workspace before connecting a real repository");
+  const entitlements = await getWorkspaceEntitlements(workspaceId);
+  requireWriteEntitlement(entitlements);
+  const name = input.name.trim();
+  const repository = input.repository.trim();
+  const branch = input.branch.trim();
+  if (!name || name.length > 80 || !repository || repository.length > 160 || !/^[A-Za-z0-9._/-]{1,120}$/.test(branch) || branch.startsWith("/") || branch.endsWith("/") || branch.split("/").includes("..")) throw new Error("Project name, repository, or branch is invalid");
+  if (input.sourceKind === "github" && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error("Verified GitHub repository name is invalid");
+  const id = `proj_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const sourceKind = input.sourceKind === "github" ? "github" : "manual";
   const repositoryVerified = sourceKind === "github" && input.repositoryVerified === true;
-  await db.prepare("INSERT INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, snapshot.workspace.id, input.name, input.repository, input.branch, sourceKind, repositoryVerified ? 1 : 0, sourceKind === "github" ? "scanning" : "unverified", 0, 0).run();
-  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "project.created", targetType: "project", targetId: id, summary: `Connected ${input.repository}`, metadata: { branch: input.branch, sourceKind, repositoryVerified } });
+  const inserted = await db.prepare("INSERT INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) SELECT ?, ?, ?, ?, ?, ?, ?, ?, 0, 0 WHERE (SELECT COUNT(*) FROM projects WHERE workspace_id = ?) < ?").bind(id, workspaceId, name, repository, branch, sourceKind, repositoryVerified ? 1 : 0, sourceKind === "github" ? "scanning" : "unverified", workspaceId, entitlements.limits.projects).run();
+  if (Number(inserted.meta.changes || 0) !== 1) throw new Error(`${entitlements.planName} plan project limit reached`);
+  await recordAudit({ workspaceId, actorEmail: actor, action: "project.created", targetType: "project", targetId: id, summary: `Connected ${repository}`, metadata: { branch, sourceKind, repositoryVerified } });
   return db.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
+}
+
+export async function createProject(email: string, input: CreateProjectInput) {
+  const snapshot = await getSaasSnapshot(email);
+  return createProjectForWorkspace(String(snapshot.workspace.id), email, input);
 }
 
 export async function updateWorkspace(email: string, name: string) {
@@ -338,9 +390,6 @@ export async function createSimulationRunForWorkspace(workspaceId: string, actor
   const db = await getD1();
   const entitlements = await getWorkspaceEntitlements(workspaceId);
   requireWriteEntitlement(entitlements);
-  const workspace = await db.prepare("SELECT id, simulation_minutes, monthly_limit FROM workspaces WHERE id = ?").bind(workspaceId).first<{ id: string; simulation_minutes: number; monthly_limit: number }>();
-  if (!workspace) throw new Error("Workspace not found");
-  if (workspace.simulation_minutes + 2 > entitlements.limits.simulationMinutes) throw new Error("Monthly simulation minute limit reached");
   const project = requestedProjectId
     ? await db.prepare("SELECT id FROM projects WHERE id = ? AND workspace_id = ?").bind(requestedProjectId, workspaceId).first<{ id: string }>()
     : await db.prepare("SELECT id FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 1").bind(workspaceId).first<{ id: string }>();
@@ -348,11 +397,15 @@ export async function createSimulationRunForWorkspace(workspaceId: string, actor
   const profile = scenarioProfiles[scenarioKey];
   const id = `run_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const seed = `wm_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
-  await db.batch([
-    db.prepare("INSERT INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, scenario_key, scenario_fingerprint, seed, before_error_rate, before_latency_ms, before_journey_success, evidence_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'modeled')").bind(id, project.id, profile.label, "modeled", profile.before.score, null, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess, 120, scenarioKey, profile.fingerprint, seed, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess),
-    db.prepare("UPDATE workspaces SET simulation_minutes = simulation_minutes + 2 WHERE id = ?").bind(workspace.id),
-  ]);
-  await recordAudit({ workspaceId: workspace.id, actorEmail: actor, action: "simulation.modeled", targetType: "simulation_run", targetId: id, summary: `${profile.label} planning forecast created`, metadata: { scenario: scenarioKey, fingerprint: profile.fingerprint, modeled: true, beforeScore: profile.before.score } });
+  const reserved = await db.prepare(reserveModeledRunMinutesSql).bind(MODELED_RUN_MINUTES, workspaceId, entitlements.usagePeriodStart, MODELED_RUN_MINUTES, entitlements.limits.simulationMinutes).run();
+  if (Number(reserved.meta.changes || 0) !== 1) throw new Error("Monthly simulation minute limit reached");
+  try {
+    await db.prepare("INSERT INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, scenario_key, scenario_fingerprint, seed, before_error_rate, before_latency_ms, before_journey_success, evidence_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'modeled')").bind(id, project.id, profile.label, "modeled", profile.before.score, null, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess, 120, scenarioKey, profile.fingerprint, seed, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess).run();
+  } catch (error) {
+    await db.prepare("UPDATE workspaces SET simulation_minutes = MAX(0, simulation_minutes - ?) WHERE id = ? AND usage_period_start = ?").bind(MODELED_RUN_MINUTES, workspaceId, entitlements.usagePeriodStart).run().catch(() => undefined);
+    throw error;
+  }
+  await recordAudit({ workspaceId, actorEmail: actor, action: "simulation.modeled", targetType: "simulation_run", targetId: id, summary: `${profile.label} planning forecast created`, metadata: { scenario: scenarioKey, fingerprint: profile.fingerprint, modeled: true, beforeScore: profile.before.score } });
   return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(id).first();
 }
 

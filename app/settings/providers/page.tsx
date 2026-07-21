@@ -33,7 +33,7 @@ export default function ProviderSettingsPage() {
       .then((result) => {
         setConfiguration(result.configuration || {});
         setMode(result.mode || { editable: false, source: "deployment_environment" });
-        setStatus(result.configuration?.composio?.configured ? "Composio GitHub OAuth is ready for workspace owners and admins." : "Composio setup is incomplete.");
+        setStatus(result.configuration?.composio?.configured ? "Composio credentials are present. The key, auth config, and GitHub consent are verified when an owner starts the connection." : "Composio setup is incomplete.");
       })
       .catch((reason) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
@@ -76,21 +76,23 @@ export default function ProviderSettingsPage() {
       <div className="provider-instructions">
         <b>Primary connection path</b>
         <code>Composio Connect Link → GitHub OAuth → WorldModel callback</code>
-        <small>Create a Composio-managed GitHub auth config and use a least-privilege project API key. WorldModel verifies the returned account against the workspace-bound OAuth attempt.</small>
+        <small>Create a Composio-managed GitHub auth config and use a scoped project API key. Grant Connected accounts read/write and Tool execution write; add Proxy execute write when repository archives, signed runner-workflow verification, or approved draft PR publication are enabled.</small>
       </div>
       {mode === null && !error && <div className="provider-loading" role="status">Checking how this deployment manages provider credentials…</div>}
       {mode && !mode.editable && <section className="provider-deployment" aria-labelledby="deployment-provider-title">
-        <h2 id="deployment-provider-title">{configuration.composio?.configured ? "GitHub OAuth is configured" : "Finish setup in Vercel"}</h2>
+        <h2 id="deployment-provider-title">{configuration.composio?.configured ? "GitHub OAuth credentials are present" : "Finish setup in Vercel"}</h2>
         {configuration.composio?.configured
-          ? <p>The required Composio credentials are present in this deployment. Rotate them only from the Vercel project environment.</p>
+          ? <p>The required values are present in this deployment. Their validity and access scope are checked when an owner starts a connection; rotate them only from the Vercel project environment.</p>
           : <><p>This deployed app intentionally does not accept provider secrets in the browser. A Vercel project administrator must add the variables below, then redeploy.</p>
             <ol>
               <li><code>COMPOSIO_API_KEY</code><small>Least-privilege project API key from Composio.</small></li>
               <li><code>COMPOSIO_GITHUB_AUTH_CONFIG_ID</code><small>The Composio auth config configured for GitHub.</small></li>
             </ol></>}
+        <p>For a scoped key, allow Connected accounts read/write and Tool execution write. Proxy execute write is also required for immutable archive downloads, exact runner-workflow revision verification, and approved draft PR publication.</p>
         <p>Keep “Automatically expose System Environment Variables” enabled so Vercel supplies the callback origin. Set <code>WORLDMODEL_PUBLIC_ORIGIN</code> only to select a different canonical HTTPS domain.</p>
         <p className="provider-safety">Never paste API keys into support messages, source control, or this page.</p>
         <div className="provider-actions">
+          <a href="https://docs.composio.dev/reference/authenticating-to-composio/project-api-key-permissions" target="_blank" rel="noreferrer">Composio scoped-key permissions ↗</a>
           <a href="https://vercel.com/docs/projects/environment-variables" target="_blank" rel="noreferrer">Vercel environment variable guide ↗</a>
           <Link href="/dashboard?tab=integrations">Return to integrations →</Link>
         </div>

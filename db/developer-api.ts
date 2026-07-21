@@ -1,12 +1,14 @@
-import { recordAudit } from "./audit";
-import { ensureSaasSchema, getSaasSnapshot, getWorkspaceEntitlements, requireRole, requireWriteEntitlement } from "./saas";
+import { recordAudit } from "./audit.ts";
+import { ensureSaasSchema, getSaasSnapshot, getWorkspaceEntitlements, requireRole, requireWriteEntitlement } from "./saas.ts";
 import { digestApiToken, generateApiTokenMaterial } from "../worldmodel/api-key-security.mjs";
-import { getRuntimeEnv } from "@/server/runtime-env";
+import { getRuntimeEnv } from "../server/runtime-env.ts";
 
 export const apiScopes = ["projects:read", "runs:read", "runs:write"] as const;
 export type ApiScope = typeof apiScopes[number];
 
 const RATE_LIMIT = 60;
+
+export const createApiKeyWithinLimitSql = "INSERT INTO api_keys (id, workspace_id, name, key_prefix, key_hash, scopes_json, created_by, expires_at) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM api_keys WHERE workspace_id = ? AND status = 'active') < ?";
 
 async function getD1() {
   const env = await getRuntimeEnv();
@@ -24,14 +26,13 @@ export async function createApiKey(email: string, input: { name: string; scopes:
   if (!validScopes(input.scopes)) throw new Error("Choose one or more supported API scopes");
   const db = await getD1();
   const workspaceId = String(snapshot.workspace.id);
-  const active = await db.prepare("SELECT COUNT(*) AS count FROM api_keys WHERE workspace_id = ? AND status = 'active'").bind(workspaceId).first<{ count: number }>();
   requireWriteEntitlement(snapshot.entitlements);
-  if (Number(active?.count || 0) >= snapshot.entitlements.limits.apiKeys) throw new Error(`${snapshot.entitlements.planName} plan API key limit reached`);
   const id = `key_${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
   const { token, keyPrefix } = generateApiTokenMaterial(id);
   const keyHash = await digestApiToken(token);
   const expiresAt = input.expirationDays ? new Date(Date.now() + input.expirationDays * 24 * 60 * 60_000).toISOString() : null;
-  await db.prepare("INSERT INTO api_keys (id, workspace_id, name, key_prefix, key_hash, scopes_json, created_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(id, workspaceId, input.name, keyPrefix, keyHash, JSON.stringify(input.scopes), email.toLowerCase(), expiresAt).run();
+  const inserted = await db.prepare(createApiKeyWithinLimitSql).bind(id, workspaceId, input.name, keyPrefix, keyHash, JSON.stringify(input.scopes), email.toLowerCase(), expiresAt, workspaceId, snapshot.entitlements.limits.apiKeys).run();
+  if (Number(inserted.meta.changes || 0) !== 1) throw new Error(`${snapshot.entitlements.planName} plan API key limit reached`);
   await recordAudit({ workspaceId, actorEmail: email, action: "api_key.created", targetType: "api_key", targetId: id, summary: `Created API key: ${input.name}`, metadata: { scopes: input.scopes.join(","), expiresAt } });
   return { key: await db.prepare("SELECT id, name, key_prefix, scopes_json, status, created_by, last_used_at, expires_at, created_at, revoked_at FROM api_keys WHERE id = ?").bind(id).first(), token };
 }

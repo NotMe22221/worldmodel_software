@@ -1,6 +1,6 @@
-import { createProject, ensureSaasSchema, getSaasSnapshot, requireRole } from "./saas.ts";
+import { createProjectForWorkspace, ensureSaasSchema, getSaasSnapshot, requireRole } from "./saas.ts";
 import { recordAudit } from "./audit.ts";
-import { createModelVersion } from "./product.ts";
+import { createModelVersionForProject } from "./product.ts";
 import { getRuntimeEnv } from "../server/runtime-env.ts";
 import { composioConfiguration } from "../server/runtime-config.ts";
 import {
@@ -22,6 +22,7 @@ import {
   releaseComposioConnectionAttempt,
   type PendingConnectionAttempt,
 } from "../server/composio-attempts.ts";
+import { refreshVerifiedProjectMapping } from "./repository-mapping.ts";
 
 async function getD1() {
   const env = await getRuntimeEnv();
@@ -195,21 +196,31 @@ export async function importComposioGithubRepository(email: string, repositoryRo
   const graph = buildRepositoryGraph(tree.entries, { repository: repository.full_name, branch: repository.default_branch, commitSha: tree.commitSha, truncated: tree.truncated });
   const graphJson = JSON.stringify(graph);
   const scanSummary = `${graph.nodes.length} components from ${graph.scannedPathCount} paths at ${tree.commitSha.slice(0, 12)} through Composio${graph.truncated ? " (tree truncated)" : ""}`;
-  const existing = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? AND lower(repository) = lower(?) LIMIT 1").bind(snapshot.workspace.id, repository.full_name).first<Record<string, unknown>>();
+  const workspaceId = String(snapshot.workspace.id);
+  const existing = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? AND lower(repository) = lower(?) LIMIT 1").bind(workspaceId, repository.full_name).first<Record<string, unknown>>();
   let projectId: string;
   if (existing) {
     projectId = String(existing.id);
-    await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1, graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, projectId, snapshot.workspace.id).run();
+    await refreshVerifiedProjectMapping(db, {
+      workspaceId,
+      projectId,
+      defaultBranch: repository.default_branch,
+      graphJson,
+      scanSummary,
+      serviceCount: graph.nodes.length,
+    });
   } else {
     const name = repository.full_name.split("/").pop()?.replaceAll("-", " ") || repository.full_name;
-    const project = await createProject(email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch, sourceKind: "github", repositoryVerified: true });
+    const project = await createProjectForWorkspace(workspaceId, email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch, sourceKind: "github", repositoryVerified: true });
     projectId = String(project?.id);
-    await db.prepare("UPDATE projects SET graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, projectId, snapshot.workspace.id).run();
+    await db.prepare("UPDATE projects SET graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, projectId, workspaceId).run();
   }
-  await db.prepare("UPDATE composio_github_repositories SET selected = 1, synced_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(repositoryRowId, snapshot.workspace.id).run();
-  await createModelVersion(email, projectId, { commitSha: tree.commitSha, graph, confidence: graph.truncated ? 78 : 90 });
-  await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "composio.repository.imported", targetType: "project", targetId: projectId, summary: `Imported and mapped ${repository.full_name} through Composio`, metadata: { connectionId: repository.connection_id, repositoryId: repository.repository_id, commitSha: tree.commitSha, componentCount: graph.nodes.length } });
-  return db.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(projectId, snapshot.workspace.id).first();
+  const mapped = await db.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(projectId, workspaceId).first<Record<string, unknown>>();
+  if (!mapped) throw new Error("Verified project mapping was not persisted");
+  await db.prepare("UPDATE composio_github_repositories SET selected = 1, synced_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(repositoryRowId, workspaceId).run();
+  await createModelVersionForProject(db, workspaceId, mapped, { commitSha: tree.commitSha, graph, confidence: graph.truncated ? 78 : 90 });
+  await recordAudit({ workspaceId, actorEmail: email, action: "composio.repository.imported", targetType: "project", targetId: projectId, summary: `Imported and mapped ${repository.full_name} through Composio`, metadata: { connectionId: repository.connection_id, repositoryId: repository.repository_id, commitSha: tree.commitSha, componentCount: graph.nodes.length } });
+  return mapped;
 }
 
 export async function disconnectComposioGithub(email: string, connectionId: string) {

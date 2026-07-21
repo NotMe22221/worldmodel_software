@@ -5,6 +5,7 @@
   "buildCommand": "npm run build",
   "startCommand": "npm start",
   "seedCommand": "npm run db:seed",
+  "observeCommand": "npm run worldmodel:observe",
   "healthCheck": "/api/health",
   "components": [
     { "id": "storefront", "name": "Storefront", "type": "frontend", "path": "apps/web", "runtime": "Next.js", "startCommand": "npm run dev:web", "healthCheck": "/", "dependencies": ["gateway"], "evidence": ["apps/web/package.json", "apps/web/app/checkout/page.tsx"] },

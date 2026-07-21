@@ -301,7 +301,7 @@ body .integration-grid { gap: 20px; }
 body .integration-card { padding: 24px; }
 body .integration-card > header { min-height: 68px; gap: 14px; padding-bottom: 20px; }
 body .integration-card > header > i { width: 46px; height: 46px; border-radius: 14px; font-size: 17px; }
-body .integration-card h3 { font-size: 17px; }
+body .integration-card :is(h2, h3) { font-size: 17px; }
 body .integration-card header p { font-size: 10px; }
 body .integration-card header > span { padding: 5px 8px; font-size: 9px; }
 body .integration-card > ul { font-size: 11px; }
@@ -314,6 +314,7 @@ body .repository-picker b { font-size: 11px; }
 body .repository-picker small, body .repository-picker em { font-size: 9px; }
 body .repository-picker button { height: 30px; border-radius: 7px; font-size: 9px; }
 body .integration-actions button, body .integration-card > button { min-height: 38px; padding-inline: 14px; border-radius: 999px; font-size: 10px; }
+body .integration-setup-note .secondary-integration { min-height: 38px; padding-inline: 14px; border-radius: 999px; font-size: 10px; }
 body .saas-empty-state { padding: 54px 24px; }
 body .saas-empty-state b { font-size: 14px; }
 body .saas-empty-state p { font-size: 11px; }

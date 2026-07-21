@@ -24,10 +24,11 @@ incomplete. Preview builds warn, and `/api/health` returns HTTP 503 until durabl
 storage is configured and reachable.
 
 Apply the registered migrations in numeric order through
-`drizzle/0019_isolate_github_workspaces.sql` before enabling production
-traffic. Migrations `0017` through `0019` are additive: `0018` installs the
+`drizzle/0020_premium_dragon_lord.sql` before enabling production
+traffic. Migrations `0017` through `0020` are additive: `0018` installs the
 Composio connection tables, and `0019` copies legacy GitHub App records into
-tenant-scoped tables without dropping the legacy rows. Migration `0017` is
+tenant-scoped tables without dropping the legacy rows. Migration `0020` adds
+the Stripe event clock used to reject stale subscription updates. Migration `0017` is
 intentionally idempotent because earlier deployments applied that file manually
 before it was added to the Drizzle journal.
 
@@ -47,6 +48,11 @@ secrets needed for the features you intend to enable:
   `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_PRO`
 - GitHub Actions evidence exchange: `RUNNER_TOKEN_SECRET`
 - Internal access: `WORLDMODEL_OPERATOR_EMAILS` and matching immutable account IDs in `WORLDMODEL_OPERATOR_USER_IDS` (both are required in production)
+
+For a scoped Composio project key, grant Connected accounts read/write and
+Tool execution write. Grant Proxy execute write when enabling immutable archive
+downloads, exact runner-workflow revision verification, or approved draft-PR
+publication. Never place a provider key in source control or a support message.
 
 Use the deployed origin for OAuth callbacks and `/api/billing/webhook` for the
 Stripe webhook. Store secrets separately in Preview and Production.

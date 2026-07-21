@@ -49,6 +49,7 @@ import {
 } from "../worldmodel/github-pr-contract.mjs";
 import { parseOperatorEmails, parseOperatorUserIds } from "../server/runtime-config.ts";
 import { expectedRunnerWorkflowRef, runnerOidcClaimsMatch } from "../server/github-oidc.ts";
+import { readBoundedRequestText, RequestBodyTooLargeError } from "../server/bounded-request-body.ts";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(
@@ -273,13 +274,22 @@ test("observed runner evidence requires a bounded destroyed environment attestat
 test("GitHub runner identity is bound to the generated workflow, branch, and dispatch event", () => {
   const input = { repository: "northstar/checkout-api", branch: "main", projectId: "proj_verified_123" };
   const workflowRef = expectedRunnerWorkflowRef(input.repository, input.branch, input.projectId);
+  const workflowSha = "a".repeat(40);
   assert.equal(workflowRef, "northstar/checkout-api/.github/workflows/worldmodel-proj_verified_123.yml@refs/heads/main");
-  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef, event_name: "workflow_dispatch" }, input), true);
-  assert.equal(runnerOidcClaimsMatch({ repository: "northstar/other-api", ref: "refs/heads/main", workflow_ref: workflowRef, event_name: "workflow_dispatch" }, input), false);
-  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/release", workflow_ref: workflowRef, event_name: "workflow_dispatch" }, input), false);
-  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef.replace("worldmodel-", "other-"), event_name: "workflow_dispatch" }, input), false);
-  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef, event_name: "push" }, input), false);
-  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", event_name: "workflow_dispatch" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef, workflow_sha: workflowSha, event_name: "workflow_dispatch" }, input), true);
+  assert.equal(runnerOidcClaimsMatch({ repository: "northstar/other-api", ref: "refs/heads/main", workflow_ref: workflowRef, workflow_sha: workflowSha, event_name: "workflow_dispatch" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/release", workflow_ref: workflowRef, workflow_sha: workflowSha, event_name: "workflow_dispatch" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef.replace("worldmodel-", "other-"), workflow_sha: workflowSha, event_name: "workflow_dispatch" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef, workflow_sha: workflowSha, event_name: "push" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef, event_name: "workflow_dispatch" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef, workflow_sha: "not-a-commit", event_name: "workflow_dispatch" }, input), false);
+});
+
+test("runner token route exposes workflow verification outages as retriable", async () => {
+  const source = await readFile(new URL("../app/api/v1/runner/token/route.ts", import.meta.url), "utf8");
+  assert.match(source, /runner_verification_unavailable/);
+  assert.match(source, /verificationUnavailable \|\| message\.includes\("not configured"\)/);
+  assert.match(source, /retriable: status === 503/);
 });
 
 test("runner workflow is tenant-project bound and contains no embedded secret", () => {
@@ -288,11 +298,27 @@ test("runner workflow is tenant-project bound and contains no embedded secret", 
     apiOrigin: "https://worldmodel.example.com",
   });
   assert.match(workflow, /permissions:\n  contents: read\n  id-token: write/);
-  assert.match(workflow, /projectId:\"proj_verified_123\"/);
+  assert.match(workflow, /--arg projectId "proj_verified_123"/);
   assert.match(workflow, /ACTIONS_ID_TOKEN_REQUEST_TOKEN/);
   assert.match(workflow, /api\/v1\/runner\/token/);
+  assert.match(workflow, /WORLDMODEL_RUN_ID: \$\{\{ inputs\.run_id \}\}/);
+  assert.match(workflow, /--arg runId "\$WORLDMODEL_RUN_ID"/);
+  assert.match(workflow, /--data-binary @-/);
+  assert.doesNotMatch(workflow, /--data '[^']*inputs\.run_id/);
   assert.doesNotMatch(workflow, /secrets\.WORLDMODEL_API_KEY/);
-  assert.match(workflow, /worldmodel:observe/);
+  assert.ok(workflow.indexOf("name: Authorize immutable execution") < workflow.indexOf("uses: actions/checkout@v4"));
+  assert.match(workflow, /ref: \$\{\{ steps\.worldmodel\.outputs\.commit_sha \}\}/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /node-version: \$\{\{ steps\.worldmodel\.outputs\.node_version \}\}/);
+  assert.match(workflow, /WORLDMODEL_EXECUTION_SPEC: \$\{\{ runner\.temp \}\}\/worldmodel-execution\.json/);
+  assert.match(workflow, /\.environment\.manifest\.install/);
+  assert.match(workflow, /\.environment\.manifest\.observeCommand/);
+  assert.match(workflow, /timeout --signal=TERM --kill-after=30s/);
+  assert.match(workflow, /cmp --silent "\$WORLDMODEL_EXECUTION_SPEC" "\$FRESH_EXECUTION"/);
+  assert.match(workflow, /scenarioFingerprint: \$execution\.scenarioFingerprint/);
+  assert.match(workflow, /revisionId: \$execution\.environment\.id/);
+  assert.equal(workflow.match(/ACTIONS_ID_TOKEN_REQUEST_TOKEN/g)?.length, 2);
+  assert.doesNotMatch(workflow, /run: npm (ci|run worldmodel:observe)/);
   assert.doesNotMatch(workflow, /wm_live_/);
   assert.throws(
     () =>
@@ -310,6 +336,44 @@ test("runner workflow is tenant-project bound and contains no embedded secret", 
       }),
     /API origin is invalid/,
   );
+});
+
+test("runner evidence body is capped by streamed UTF-8 bytes even without a trustworthy content length", async () => {
+  const chunked = new Request("https://worldmodel.example/api/v1/runner/evidence", {
+    method: "POST",
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("abc"));
+        controller.enqueue(new TextEncoder().encode("def"));
+        controller.close();
+      },
+    }),
+    duplex: "half",
+    headers: { "content-length": "1" },
+  });
+  await assert.rejects(() => readBoundedRequestText(chunked, 5), RequestBodyTooLargeError);
+
+  const multibyte = new Request("https://worldmodel.example/api/v1/runner/evidence", {
+    method: "POST",
+    body: "💥",
+  });
+  await assert.rejects(() => readBoundedRequestText(multibyte, 3), RequestBodyTooLargeError);
+  assert.equal(await readBoundedRequestText(new Request("https://worldmodel.example", { method: "POST", body: "💥" }), 4), "💥");
+});
+
+test("runner evidence route marks persistence and configuration failures retriable", async () => {
+  const source = await readFile(new URL("../app/api/v1/runner/evidence/route.ts", import.meta.url), "utf8");
+  assert.match(source, /message\.startsWith\("runner_not_configured:"\)/);
+  assert.match(source, /message\.startsWith\("evidence_persistence_failed:"\)/);
+  assert.match(source, /unavailable \? 503 : serverFailure \? 500/);
+  assert.match(source, /retriable: status >= 500/);
+});
+
+test("decision approval role checks reuse the workspace snapshot that selected the project", async () => {
+  const source = await readFile(new URL("../db/product.ts", import.meta.url), "utf8");
+  assert.match(source, /approveDecisionReport[\s\S]*?const \{ db, workspaceId, snapshot \} = await context\(email, projectId, true\); requireRole\(snapshot, \["owner", "admin"\]\)/);
+  assert.match(source, /publishDecisionDraftPr[\s\S]*?const \{ db, workspaceId, project, snapshot \} = await context\(email, projectId, true\); requireRole\(snapshot, \["owner", "admin"\]\)/);
+  assert.doesNotMatch(source, /requireRole\(\(await getSaasSnapshot\(email\)\), \["owner", "admin"\]\)/);
 });
 
 test("GitHub tree scanner builds an evidence-linked component graph", () => {
