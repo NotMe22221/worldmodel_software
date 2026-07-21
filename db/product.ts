@@ -34,8 +34,7 @@ async function ensureReportApprovalArtifactColumns(db: RuntimeDatabase) {
   }
 }
 
-export async function ensureProductSchema() {
-  const db = await runtimeDb();
+async function ensureProductSchemaForDatabase(db: RuntimeDatabase) {
   await db.batch([
     db.prepare("CREATE TABLE IF NOT EXISTS model_versions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, project_id TEXT NOT NULL, commit_sha TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', graph_json TEXT NOT NULL DEFAULT '{\"nodes\":[],\"edges\":[]}', confidence INTEGER NOT NULL DEFAULT 0, scan_version TEXT NOT NULL DEFAULT 'wm-ts-1', user_overrides_json TEXT NOT NULL DEFAULT '{}', approved_by TEXT, approved_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS model_versions_project_idx ON model_versions(workspace_id, project_id, created_at)"),
@@ -62,6 +61,10 @@ export async function ensureProductSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS report_approvals (report_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approved_by TEXT NOT NULL, approved_at TEXT NOT NULL, decision_note TEXT NOT NULL, artifact_ref TEXT, artifact_sha256 TEXT, artifact_size_bytes INTEGER, pr_status TEXT NOT NULL DEFAULT 'not_requested', pr_branch TEXT, pr_started_at TEXT, pr_url TEXT, pr_number INTEGER, published_at TEXT)"),
   ]);
   await ensureReportApprovalArtifactColumns(db);
+}
+
+export async function ensureProductSchema() {
+  await ensureProductSchemaForDatabase(await runtimeDb());
 }
 
 async function context(email: string, projectId: string, write = false) {
@@ -137,6 +140,10 @@ export async function createModelVersionForProject(db: RuntimeDatabase, workspac
     && graph.branch === project.branch
     && String(graph.commitSha || "").toLowerCase() === input.commitSha.toLowerCase();
   if (project.repository_verified !== 1 || !project.scanned_at || !graphMatchesProject || nodes.length < 1 || nodes.length > 250 || edges.length > 500 || graphJson.length > 1_000_000) throw new Error("model_invalid: Model versions must come from the verified repository scan");
+  // Repository imports call this helper with an already-resolved database and
+  // do not pass through the normal product-page context. Keep that path
+  // resilient when an older deployment database has not applied migration 0017.
+  await ensureProductSchemaForDatabase(db);
   const confidence = Math.max(0, Math.min(100, Math.round(input.confidence)));
   return persistMappedModelVersion(db, {
     modelId: id("model"),

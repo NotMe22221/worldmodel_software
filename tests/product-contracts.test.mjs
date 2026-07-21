@@ -82,6 +82,12 @@ test("GitHub connection stays one-click for workspace users while provider setup
   assert.match(readiness, /workspace users do not provide provider credentials/);
   assert.doesNotMatch(readiness, /Composio GitHub OAuth credentials are missing/);
 });
+test("repository imports initialize the product schema before persisting a model version", async () => {
+  const product = await readFile(new URL("../db/product.ts", import.meta.url), "utf8");
+  const createForProject = product.match(/export async function createModelVersionForProject[\s\S]*?(?=export async function approveModelVersion)/)?.[0] || "";
+  assert.match(createForProject, /await ensureProductSchemaForDatabase\(db\)/);
+  assert.match(product, /CREATE TABLE IF NOT EXISTS model_versions/);
+});
 test("rejects service path traversal and unknown dependency targets", () => {
   assert.throws(() => validateManifest({ ...manifest, services: [{ ...manifest.services[0], root: "../outside" }] }), /unsafe startup/);
   assert.throws(() => validateManifest({ ...manifest, services: [{ ...manifest.services[0], dependsOn: ["missing"] }] }), /invalid dependencies/);
