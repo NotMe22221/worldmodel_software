@@ -23,3 +23,30 @@ test("registration rejects weak passwords and malformed emails", async () => {
   const { registerAccount } = await import("../server/auth.ts");
   await assert.rejects(() => registerAccount({ email: "not-an-email", password: "short", displayName: "QA", organizationName: "QA Org" }), /valid business email/);
 });
+
+test("public identity headers cannot bypass session authentication", async () => {
+  const { registerAccount, createSession } = await import("../server/auth.ts");
+  const { requestUser, requestIdentity } = await import("../server/request-identity.ts");
+  const unique = crypto.randomUUID().replaceAll("-", "");
+  const email = `session.${unique}@worldmodel.test`;
+  const registered = await registerAccount({ email, password: "Strong-Test-Password-2026!", displayName: "Session Test", organizationName: "WorldModel QA" });
+
+  const forged = new Request("https://worldmodel.test/api/auth/session", {
+    headers: {
+      "oai-authenticated-user-email": "attacker@worldmodel.test",
+      "oai-authenticated-user-full-name": "Forged User",
+    },
+  });
+  assert.equal(await requestUser(forged), null);
+  assert.equal(await requestIdentity(forged), null);
+
+  const session = await createSession(registered.id);
+  const authenticated = new Request("https://worldmodel.test/api/auth/session", {
+    headers: {
+      cookie: `wm_session=${session.token}`,
+      "oai-authenticated-user-email": "attacker@worldmodel.test",
+    },
+  });
+  assert.equal((await requestUser(authenticated))?.email, email);
+  assert.equal(await requestIdentity(authenticated), email);
+});
