@@ -68,8 +68,12 @@ const maximumScenarioBytes = 100_000;
 const maximumManifestBytes = 100_000;
 const githubJwksTtlMs = 5 * 60_000;
 const githubJwksTimeoutMs = 5_000;
+const githubJwksRefreshCooldownMs = 60_000;
+const minimumRunnerTokenSecretBytes = 32;
 type GithubJwk = JsonWebKey & { kid?: string };
 let githubJwksCache: { keys: GithubJwk[]; expiresAt: number } | undefined;
+let githubJwksRequest: Promise<GithubJwk[]> | undefined;
+let githubJwksLastForcedRefreshAt = 0;
 
 function decode(value: string) {
   const padded = value.replaceAll("-", "+").replaceAll("_", "/") + "===".slice((value.length + 3) % 4);
@@ -98,22 +102,33 @@ function parseBoundedJson(raw: string, label: string, maximumBytes: number) {
 async function githubJwks(forceRefresh = false) {
   const now = Date.now();
   if (!forceRefresh && githubJwksCache && githubJwksCache.expiresAt > now) return githubJwksCache.keys;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), githubJwksTimeoutMs);
+  if (githubJwksRequest) return githubJwksRequest;
+  if (forceRefresh && githubJwksCache && now - githubJwksLastForcedRefreshAt < githubJwksRefreshCooldownMs) return githubJwksCache.keys;
+  if (forceRefresh) githubJwksLastForcedRefreshAt = now;
+  const request = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), githubJwksTimeoutMs);
+    try {
+      const response = await fetch("https://token.actions.githubusercontent.com/.well-known/jwks", {
+        headers: { accept: "application/json" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("unavailable");
+      const value = await response.json() as { keys?: GithubJwk[] };
+      if (!Array.isArray(value.keys) || value.keys.length === 0 || value.keys.length > 100) throw new Error("invalid keys");
+      githubJwksCache = { keys: value.keys, expiresAt: Date.now() + githubJwksTtlMs };
+      return value.keys;
+    } catch {
+      throw new Error("oidc_unavailable: GitHub OIDC keys are unavailable");
+    } finally {
+      clearTimeout(timeout);
+    }
+  })();
+  githubJwksRequest = request;
   try {
-    const response = await fetch("https://token.actions.githubusercontent.com/.well-known/jwks", {
-      headers: { accept: "application/json" },
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error("unavailable");
-    const value = await response.json() as { keys?: GithubJwk[] };
-    if (!Array.isArray(value.keys) || value.keys.length === 0 || value.keys.length > 100) throw new Error("invalid keys");
-    githubJwksCache = { keys: value.keys, expiresAt: now + githubJwksTtlMs };
-    return value.keys;
-  } catch {
-    throw new Error("oidc_unavailable: GitHub OIDC keys are unavailable");
+    return await request;
   } finally {
-    clearTimeout(timeout);
+    if (githubJwksRequest === request) githubJwksRequest = undefined;
   }
 }
 
@@ -133,9 +148,10 @@ async function verifyGithubJwt(token: string, audience: string) {
   const now = Math.floor(Date.now() / 1000);
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (!Number.isInteger(claims.exp) || Number(claims.exp) < now || (claims.nbf != null && (!Number.isInteger(claims.nbf) || claims.nbf > now + 30)) || !audiences.includes(audience)) throw new Error("oidc_invalid: GitHub OIDC token is expired or has the wrong audience");
+  const usedExistingCache = Boolean(githubJwksCache && githubJwksCache.expiresAt > Date.now());
   let keys = await githubJwks();
   let jwk = keys.find((candidate) => candidate.kid === header.kid);
-  if (!jwk) {
+  if (!jwk && usedExistingCache) {
     keys = await githubJwks(true);
     jwk = keys.find((candidate) => candidate.kid === header.kid);
   }
@@ -148,6 +164,14 @@ async function verifyGithubJwt(token: string, audience: string) {
 
 async function runnerKey(secret: string, use: KeyUsage[]) {
   return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, use);
+}
+
+export function requiredRunnerTokenSecret(value: string | undefined) {
+  const secret = value?.trim() || "";
+  if (new TextEncoder().encode(secret).byteLength < minimumRunnerTokenSecretBytes) {
+    throw new Error("runner_not_configured: RUNNER_TOKEN_SECRET must contain at least 32 UTF-8 bytes");
+  }
+  return secret;
 }
 
 function validateRunnerClaims(value: unknown): RunnerClaims {
@@ -213,7 +237,7 @@ export async function exchangeRunnerOidc(
   verifyWorkflow?: RunnerWorkflowVerifier,
 ) {
   const env = await runtime();
-  if (!env.RUNNER_TOKEN_SECRET) throw new Error("runner_not_configured: RUNNER_TOKEN_SECRET is missing");
+  const runnerSecret = requiredRunnerTokenSecret(env.RUNNER_TOKEN_SECRET);
   if (!runnerId.test(input.projectId) || !runnerId.test(input.runId) || input.audience.length > 2_000) throw new Error("request_invalid: Project, run, or audience is invalid");
   const claims = await verifyGithubJwt(input.oidcToken, input.audience);
   // GitHub's signed repository/workflow claims provide the tenant scope for this
@@ -270,7 +294,7 @@ export async function exchangeRunnerOidc(
   };
   const header = encode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const payload = encode(JSON.stringify(runner));
-  const signature = await crypto.subtle.sign("HMAC", await runnerKey(env.RUNNER_TOKEN_SECRET, ["sign"]), new TextEncoder().encode(`${header}.${payload}`));
+  const signature = await crypto.subtle.sign("HMAC", await runnerKey(runnerSecret, ["sign"]), new TextEncoder().encode(`${header}.${payload}`));
   return {
     token: `${header}.${payload}.${encode(new Uint8Array(signature))}`,
     expiresAt: new Date(runner.exp * 1000).toISOString(),
@@ -333,8 +357,8 @@ async function persistedReplay(
 
 export async function acceptRunnerEvidence(token: string, raw: string) {
   const env = await runtime();
-  if (!env.RUNNER_TOKEN_SECRET) throw new Error("runner_not_configured: RUNNER_TOKEN_SECRET is missing");
-  const claims = await verifyRunnerToken(token, env.RUNNER_TOKEN_SECRET);
+  const runnerSecret = requiredRunnerTokenSecret(env.RUNNER_TOKEN_SECRET);
+  const claims = await verifyRunnerToken(token, runnerSecret);
   // Product schema initialization historically omitted this migration-backed
   // table, so retain a safe lazy create at the callback boundary.
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS runner_callbacks (run_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, project_id TEXT NOT NULL, token_jti TEXT NOT NULL UNIQUE, evidence_json TEXT NOT NULL, received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();

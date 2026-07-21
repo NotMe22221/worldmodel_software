@@ -6,7 +6,10 @@ import {
   requestRepairChanges,
   requestRepairReview,
 } from "@/db/repairs";
+import { readBoundedRequestJson, RequestBodyTooLargeError } from "@/server/bounded-request-body";
 import { requestIdentity } from "@/server/request-identity";
+
+const MAX_REPAIR_BODY_BYTES = 16_384;
 
 function failure(error: unknown) {
   const message =
@@ -69,11 +72,12 @@ export async function POST(request: Request) {
     note?: string;
   };
   try {
-    payload = await request.json();
-  } catch {
+    payload = await readBoundedRequestJson(request, MAX_REPAIR_BODY_BYTES);
+  } catch (error) {
+    const tooLarge = error instanceof RequestBodyTooLargeError;
     return Response.json(
-      { error: "A valid JSON request body is required" },
-      { status: 400 },
+      { error: tooLarge ? "Request body exceeds 16 KB" : "A valid JSON request body is required" },
+      { status: tooLarge ? 413 : 400 },
     );
   }
   if (!payload.proposalId || payload.proposalId.length > 120)

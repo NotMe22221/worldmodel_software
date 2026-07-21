@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { DRAFT_PR_PUBLICATION_LEASE_MS, deterministicDraftPrBranch, draftPrPublicationLeaseExpired } from "../db/draft-pr-publication.ts";
 import { draftCampaignSchema } from "../server/openai-campaign-schema.ts";
 import { candidateScore, validateCampaign, validateJourney, validateManifest, validateScenario } from "../worldmodel/product-contracts.ts";
 import { normalizeExecutionManifest } from "../worldmodel/runner-evidence.ts";
@@ -26,6 +27,41 @@ test("repository environment fixtures include the observed-evidence command", as
   const projectPage = await readFile(new URL("../app/projects/[projectId]/page.tsx", import.meta.url), "utf8");
   assert.equal(fixture.observeCommand, "npm run worldmodel:observe");
   assert.match(projectPage, /observeCommand: "npm run worldmodel:observe"/);
+});
+test("live replay keeps campaign-run event identity while showing linked observed metrics", async () => {
+  const product = await readFile(new URL("../db/product.ts", import.meta.url), "utf8");
+  const campaignRuns = await readFile(new URL("../worldmodel/campaign-runs.mjs", import.meta.url), "utf8");
+  const projectPage = await readFile(new URL("../app/projects/[projectId]/page.tsx", import.meta.url), "utf8");
+  const liveRunsView = projectPage.match(/function LiveRunsView[\s\S]*?(?=function LiveReplay)/)?.[0] || "";
+
+  assert.match(product, /db\.prepare\(campaignReplayRowsSql\)/);
+  assert.match(campaignRuns, /LEFT JOIN simulation_runs sr ON sr\.id = cr\.simulation_run_id/);
+  assert.match(campaignRuns, /SELECT cr\.\*, sr\.scenario, sr\.error_rate, sr\.latency_ms, sr\.journey_success/);
+  assert.match(liveRunsView, /campaignRuns\.map\(\(run\)/);
+  assert.match(liveRunsView, /selectedRunId = campaignRuns\.some/);
+  assert.match(liveRunsView, /<LiveReplay key=\{selectedRunId\} projectId=\{projectId\} runId=\{selectedRunId\}/);
+  assert.doesNotMatch(liveRunsView, /runs\.some|\.\.\.runs/);
+});
+test("campaign approval exposes every immutable scenario and replay controls select historical evidence", async () => {
+  const projectPage = await readFile(new URL("../app/projects/[projectId]/page.tsx", import.meta.url), "utf8");
+  const campaignDisclosure = projectPage.match(/function CampaignPlanDetails[\s\S]*?(?=function CampaignsView)/)?.[0] || "";
+  const campaignControl = projectPage.match(/function CampaignControlView[\s\S]*?(?=function LiveRunsView)/)?.[0] || "";
+  const replay = projectPage.match(/function LiveReplay[\s\S]*?(?=function RepairTournamentView)/)?.[0] || "";
+
+  assert.match(campaignDisclosure, /scenarios\.map\(\(scenario, index\)/);
+  assert.match(campaignDisclosure, /Workload/);
+  assert.match(campaignDisclosure, /Faults/);
+  assert.match(campaignDisclosure, /Hard gates/);
+  assert.match(campaignDisclosure, /scenario\.modelVersionId/);
+  assert.match(campaignDisclosure, /scenario\.environmentRevisionId/);
+  assert.match(campaignDisclosure, /journeys\.join/);
+  assert.match(campaignDisclosure, /ASSUMPTIONS/);
+  assert.match(campaignControl, /<CampaignPlanDetails plan=\{plan\}/);
+  assert.doesNotMatch(campaignControl, /scenarios\?\.slice|scenario-chips/);
+  assert.match(replay, /onChange=\{\(event\) => selectEvent/);
+  assert.match(replay, /visibleEvents = events\.slice\(0, selectedPosition \+ 1\)/);
+  assert.match(replay, /aria-current=\{index === selectedPosition \? "step"/);
+  assert.doesNotMatch(replay, /readOnly/);
 });
 test("rejects service path traversal and unknown dependency targets", () => {
   assert.throws(() => validateManifest({ ...manifest, services: [{ ...manifest.services[0], root: "../outside" }] }), /unsafe startup/);
@@ -186,6 +222,17 @@ test("campaign approval atomically reserves plan minutes only once", async () =>
   assert.match(approveCampaign, /AND project_id = \? AND status = \?/);
   assert.match(approveCampaign, /claim\.meta\.changes/);
 });
+test("campaign cancellation conditionally transitions children and parent in one batch", async () => {
+  const source = await readFile(new URL("../db/product.ts", import.meta.url), "utf8");
+  const campaignRuns = await readFile(new URL("../worldmodel/campaign-runs.mjs", import.meta.url), "utf8");
+  const cancelCampaign = source.match(/export async function cancelCampaign[\s\S]*?(?=export async function startInvestigation)/)?.[0] || "";
+
+  assert.match(cancelCampaign, /const claimed = await requestCampaignCancellation\(db, campaignId, workspaceId, projectId, now\)/);
+  assert.match(campaignRuns, /const \[, claimed\] = await db\.batch/);
+  assert.match(campaignRuns, /UPDATE campaign_runs[\s\S]*EXISTS \(SELECT 1 FROM campaigns c[\s\S]*c\.status IN \('dispatching','queued','running'\)/);
+  assert.match(campaignRuns, /UPDATE campaigns[\s\S]*AND project_id = \? AND status IN \('dispatching','queued','running'\)/);
+  assert.match(campaignRuns, /claimed\?\.meta\?\.changes/);
+});
 test("candidate publication requires the exact approved artifact bytes", async () => {
   const encoded = new TextEncoder().encode(JSON.stringify({
     commitSha: "a".repeat(40),
@@ -219,6 +266,24 @@ test("decision approval binds publishing to redacted observed artifact metadata"
   assert.match(source, /lower\(ra\.artifact_sha256\) = lower\(ea\.sha256\)/);
   assert.match(source, /verifyCandidateArtifact\(await object\.arrayBuffer\(\)/);
   assert.match(source, /Candidate commit is not the approved immutable model used by this observed run/);
+});
+test("draft PR publication uses a deterministic branch and a recoverable compare-and-swap lease", async () => {
+  const source = await readFile(new URL("../db/product.ts", import.meta.url), "utf8");
+  const publish = source.match(/export async function publishDecisionDraftPr[\s\S]*?(?=export async function sharedDecisionReport)/)?.[0] || "";
+  const digest = "a".repeat(64);
+  const branch = deterministicDraftPrBranch("Report_123", digest);
+
+  assert.equal(branch, "worldmodel/report_123-aaaaaaaaaaaa");
+  assert.equal(deterministicDraftPrBranch("Report_123", digest), branch);
+  assert.notEqual(deterministicDraftPrBranch("Report_123", `b${digest.slice(1)}`), branch);
+  assert.equal(draftPrPublicationLeaseExpired(null), true);
+  assert.equal(draftPrPublicationLeaseExpired("invalid"), true);
+  assert.equal(draftPrPublicationLeaseExpired(new Date(1_000).toISOString(), 1_000 + DRAFT_PR_PUBLICATION_LEASE_MS - 1), false);
+  assert.equal(draftPrPublicationLeaseExpired(new Date(1_000).toISOString(), 1_000 + DRAFT_PR_PUBLICATION_LEASE_MS), true);
+  assert.match(publish, /pr_branch = \?, pr_started_at = \?/);
+  assert.match(publish, /coalesce\(pr_branch, ''\) = \? AND coalesce\(pr_started_at, ''\) = \?/);
+  assert.match(publish, /pr_branch = \? AND pr_started_at = \? AND artifact_ref = \?/);
+  assert.doesNotMatch(publish, /branchSuffix|crypto\.randomUUID/);
 });
 test("candidate hard gates cannot be bypassed by a high score", () => assert.equal(candidateScore({ resilienceImprovement: 100, regressionSafety: 100, complexity: 0, performance: 100, security: 100, evidenceConfidence: 100, hardGatesPassed: false }), 0));
 test("campaign execution preflight requires the orchestrator, artifact store, and GitHub Actions runner", () => {

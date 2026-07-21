@@ -81,7 +81,14 @@ export async function importGithubRepository(email: string, repositoryId: string
   }
   const name = repository.full_name.split("/").pop()?.replaceAll("-", " ") || repository.full_name;
   const project = await createProjectForWorkspace(workspaceId, email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch, sourceKind: "github", repositoryVerified: true });
-  await db.prepare("UPDATE projects SET graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, project?.id, workspaceId).run();
+  await refreshVerifiedProjectMapping(db, {
+    workspaceId,
+    projectId: String(project?.id),
+    defaultBranch: repository.default_branch,
+    graphJson,
+    scanSummary,
+    serviceCount: graph.nodes.length,
+  });
   const mapped = await db.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(project?.id, workspaceId).first<Record<string, unknown>>();
   if (!mapped) throw new Error("Verified project mapping was not persisted");
   await selectGithubRepository(db, workspaceId, repositoryId);

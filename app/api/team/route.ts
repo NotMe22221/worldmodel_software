@@ -1,5 +1,8 @@
 import { createWorkspaceInvitation, removeWorkspaceMember, revokeWorkspaceInvitation, updateWorkspaceMemberRole } from "@/db/team";
+import { readBoundedRequestJson, RequestBodyTooLargeError } from "@/server/bounded-request-body";
 import { requestIdentity } from "@/server/request-identity";
+
+const MAX_TEAM_BODY_BYTES = 8_192;
 
 function failure(error: unknown) {
   const message = error instanceof Error ? error.message : "Team change could not be completed";
@@ -11,8 +14,11 @@ export async function POST(request: Request) {
   const email = await requestIdentity(request);
   if (!email) return Response.json({ error: "Authentication required" }, { status: 401 });
   let payload: { action?: string; email?: string; role?: string; invitationId?: string };
-  try { payload = await request.json(); }
-  catch { return Response.json({ error: "A valid JSON request body is required" }, { status: 400 }); }
+  try { payload = await readBoundedRequestJson(request, MAX_TEAM_BODY_BYTES); }
+  catch (error) {
+    const tooLarge = error instanceof RequestBodyTooLargeError;
+    return Response.json({ error: tooLarge ? "Request body exceeds 8 KB" : "A valid JSON request body is required" }, { status: tooLarge ? 413 : 400 });
+  }
   const roles = ["admin", "member", "viewer"] as const;
   if (payload.action === "invite") {
     const invitee = payload.email?.trim().toLowerCase();

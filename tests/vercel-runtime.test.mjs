@@ -204,6 +204,26 @@ test("Vercel build preflight rejects local-only runtime flags", () => {
   assert.doesNotMatch(result.stderr, /secret/);
 });
 
+test("Vercel build preflight rejects a configured weak runner signing secret without printing it", () => {
+  const weakSecret = "weak-runner-secret-do-not-print";
+  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      VERCEL: "1",
+      VERCEL_ENV: "production",
+      TURSO_DATABASE_URL: "libsql://worldmodel.turso.io",
+      TURSO_AUTH_TOKEN: "secret",
+      WORLDMODEL_PUBLIC_ORIGIN: "https://worldmodel.example",
+      RUNNER_TOKEN_SECRET: weakSecret,
+    },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RUNNER_TOKEN_SECRET must contain at least 32 UTF-8 bytes/);
+  assert.doesNotMatch(result.stderr, new RegExp(weakSecret));
+});
+
 test("registered migrations include the product and tenant-isolation schema", () => {
   const database = new DatabaseSync(":memory:");
   const migrations = readMigrationFiles({

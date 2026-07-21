@@ -2057,12 +2057,14 @@ export default function Dashboard() {
                         )}
                       </article>
                       <article className="api-boundary">
-                        <b>Private pilot boundary</b>
+                        <b>Production API boundary</b>
                         <p>
                           Key authentication, scopes, tenant isolation, and rate
-                          limiting are active. External CI traffic still
-                          requires an API-capable production ingress because
-                          this Vercel deployment remains private.
+                          limiting are active. External CI can call this Vercel
+                          deployment over HTTPS with a scoped bearer key. Store
+                          the key only in your CI provider&apos;s secret manager. If
+                          Vercel Deployment Protection is enabled, CI also needs
+                          the project&apos;s authorized protection-bypass mechanism.
                         </p>
                       </article>
                     </section>
@@ -2161,6 +2163,7 @@ export default function Dashboard() {
                                 name="evidence"
                                 required
                                 maxLength={500}
+                                aria-label={`Evidence for ${check.label}`}
                                 placeholder="Link, owner, date, or review record"
                               />
                               <button disabled={creating}>
@@ -2266,13 +2269,6 @@ export default function Dashboard() {
                     minutes remaining · resets{" "}
                     {dateLabel(data.entitlements.usagePeriodEnd)}
                   </p>
-                  <div className="usage-bars">
-                    {[18, 32, 24, 46, 62, 38, 74, 58, 81, 66, 42, 54].map(
-                      (height, index) => (
-                        <i key={index} style={{ height: `${height}%` }} />
-                      ),
-                    )}
-                  </div>
                 </article>
                 <article className="saas-card plan-card">
                   <span>CURRENT PLAN</span>
@@ -2356,6 +2352,7 @@ export default function Dashboard() {
                           className="member-role-select"
                           value={member.role}
                           disabled={creating}
+                          aria-label={`Role for ${member.email}`}
                           onChange={(event) =>
                             updateMemberRole(member.email, event.target.value)
                           }
@@ -2374,6 +2371,7 @@ export default function Dashboard() {
                         <button
                           className="remove-member"
                           disabled={creating}
+                          aria-label={`Remove ${member.email}`}
                           onClick={() => removeMember(member.email)}
                         >
                           Remove
@@ -2414,10 +2412,10 @@ export default function Dashboard() {
                 </section>
               )}
               <aside className="team-access-boundary">
-                <b>Private pilot access</b>
+                <b>Invitation access</b>
                 <p>
-                  Send the one-time link securely. The invited email must also
-                  be allowed through the private deployment sign-in gate.
+                  Send the one-time link securely. The recipient must sign in
+                  with the invited email before the invitation can be accepted.
                 </p>
               </aside>
             </>
@@ -2666,7 +2664,7 @@ export default function Dashboard() {
                 Branch
                 <input name="branch" defaultValue="main" />
               </label>
-              {error && <p className="form-error">{error}</p>}
+              {error && <p className="form-error" role="alert">{error}</p>}
               <div>
                 <button type="button" onClick={() => setShowCreate(false)}>
                   Cancel
@@ -2754,7 +2752,7 @@ export default function Dashboard() {
                     <option value="viewer">Viewer</option>
                   </select>
                 </label>
-                {error && <p className="form-error">{error}</p>}
+                {error && <p className="form-error" role="alert">{error}</p>}
                 <div>
                   <button
                     type="button"

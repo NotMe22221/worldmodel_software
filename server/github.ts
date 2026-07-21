@@ -379,6 +379,66 @@ type GithubDraftFilesInput = {
   freshBranchFromBase?: boolean;
 };
 
+type GithubDraftPull = { number: number; html_url: string; draft: boolean };
+
+function sameGithubSha(actual: unknown, expected: string) {
+  return typeof actual === "string" && /^[a-f0-9]{40}$/i.test(actual) && actual.toLowerCase() === expected.toLowerCase();
+}
+
+function validatedGithubDraftPull(value: unknown, input: GithubDraftFilesInput, expectedHeadSha: string) {
+  const pull = value && typeof value === "object" ? value as Partial<GithubDraftPull> & {
+    state?: unknown;
+    merged_at?: unknown;
+    head?: { ref?: unknown; sha?: unknown; repo?: { full_name?: unknown } };
+    base?: { ref?: unknown; repo?: { full_name?: unknown } };
+  } : {};
+  if (!Number.isSafeInteger(pull.number) || Number(pull.number) < 1 || typeof pull.html_url !== "string" || !pull.html_url.startsWith("https://github.com/") || typeof pull.draft !== "boolean") {
+    throw new Error("GitHub returned an invalid draft pull request");
+  }
+  const fullName = `${input.owner}/${input.repository}`.toLowerCase();
+  if (
+    pull.state !== "open"
+    || pull.merged_at != null
+    || pull.draft !== true
+    || pull.head?.ref !== input.headBranch
+    || !sameGithubSha(pull.head?.sha, expectedHeadSha)
+    || String(pull.head?.repo?.full_name || "").toLowerCase() !== fullName
+    || pull.base?.ref !== input.baseBranch
+    || String(pull.base?.repo?.full_name || "").toLowerCase() !== fullName
+  ) {
+    throw new Error("github_conflict: GitHub pull request is not an open draft at the verified branch head");
+  }
+  return { number: Number(pull.number), html_url: pull.html_url, draft: true };
+}
+
+async function existingGithubDraftPull(root: string, input: GithubDraftFilesInput, expectedHeadSha: string, token: string) {
+  const pulls = await githubRequest<unknown>(
+    `${root}/pulls?state=all&head=${encodeURIComponent(`${input.owner}:${input.headBranch}`)}&base=${encodeURIComponent(input.baseBranch)}`,
+    token,
+  );
+  if (!Array.isArray(pulls.payload)) throw new Error("GitHub returned an invalid pull request list");
+  return pulls.payload.length ? validatedGithubDraftPull(pulls.payload[0], input, expectedHeadSha) : null;
+}
+
+async function verifiedGithubFreshBranchHead(root: string, input: GithubDraftFilesInput, expectedTreeSha: string, token: string) {
+  const headPath = input.headBranch.split("/").map(encodeURIComponent).join("/");
+  const head = await githubRequest<{ object?: { sha?: string } }>(`${root}/git/ref/heads/${headPath}`, token, undefined, [200, 404]);
+  if (head.status === 404) return null;
+  const headSha = head.payload?.object?.sha;
+  if (typeof headSha !== "string" || !/^[a-f0-9]{40}$/i.test(headSha)) throw new Error("GitHub returned an invalid draft branch");
+  const commit = await githubRequest<{ sha?: string; tree?: { sha?: string }; parents?: Array<{ sha?: string }> }>(`${root}/git/commits/${headSha}`, token);
+  const parents = Array.isArray(commit.payload?.parents) ? commit.payload.parents : [];
+  if (
+    !sameGithubSha(commit.payload?.sha, headSha)
+    || !sameGithubSha(commit.payload?.tree?.sha, expectedTreeSha)
+    || parents.length !== 1
+    || !sameGithubSha(parents[0]?.sha, input.baseSha)
+  ) {
+    throw new Error("GitHub draft branch conflicts with the approved repair candidate");
+  }
+  return headSha;
+}
+
 export async function publishGithubDraftFiles(input: GithubDraftFilesInput & { installationId: string }) {
   return publishGithubDraftFilesWithToken(input, await installationToken(input.installationId));
 }
@@ -399,10 +459,22 @@ export async function publishGithubDraftFilesWithToken(input: GithubDraftFilesIn
     }
     const tree = await githubRequest<{ sha: string }>(`${root}/git/trees`, token, { method: "POST", body: JSON.stringify({ base_tree: baseCommit.payload.tree.sha, tree: treeEntries }) });
     if (!/^[a-f0-9]{40}$/i.test(tree.payload.sha || "")) throw new Error("GitHub returned an invalid candidate tree");
-    const commit = await githubRequest<{ sha: string }>(`${root}/git/commits`, token, { method: "POST", body: JSON.stringify({ message: "fix: WorldModel verified repair candidate", tree: tree.payload.sha, parents: [input.baseSha] }) });
-    if (!/^[a-f0-9]{40}$/i.test(commit.payload.sha || "")) throw new Error("GitHub returned an invalid candidate commit");
-    await githubRequest(`${root}/git/refs`, token, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${input.headBranch}`, sha: commit.payload.sha }) }, [201]);
-    return (await githubRequest<{ number: number; html_url: string; draft: boolean }>(`${root}/pulls`, token, { method: "POST", body: JSON.stringify({ title: input.title, head: input.headBranch, base: input.baseBranch, body: input.body, draft: true, maintainer_can_modify: true }) }, [201])).payload;
+    let headSha = await verifiedGithubFreshBranchHead(root, input, tree.payload.sha, token);
+    if (!headSha) {
+      const commit = await githubRequest<{ sha: string }>(`${root}/git/commits`, token, { method: "POST", body: JSON.stringify({ message: "fix: WorldModel verified repair candidate", tree: tree.payload.sha, parents: [input.baseSha] }) });
+      if (!/^[a-f0-9]{40}$/i.test(commit.payload.sha || "")) throw new Error("GitHub returned an invalid candidate commit");
+      const createdRef = await githubRequest(`${root}/git/refs`, token, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${input.headBranch}`, sha: commit.payload.sha }) }, [201, 422]);
+      if (createdRef.status === 201) headSha = commit.payload.sha;
+      else headSha = await verifiedGithubFreshBranchHead(root, input, tree.payload.sha, token);
+      if (!headSha) throw new Error("GitHub draft branch creation conflicted without a reusable branch");
+    }
+    const existingPull = await existingGithubDraftPull(root, input, headSha, token);
+    if (existingPull) return existingPull;
+    const created = await githubRequest<unknown>(`${root}/pulls`, token, { method: "POST", body: JSON.stringify({ title: input.title, head: input.headBranch, base: input.baseBranch, body: input.body, draft: true, maintainer_can_modify: true }) }, [201, 422]);
+    if (created.status === 201) return validatedGithubDraftPull(created.payload, input, headSha);
+    const racedPull = await existingGithubDraftPull(root, input, headSha, token);
+    if (racedPull) return racedPull;
+    throw new Error("GitHub draft pull request creation conflicted without a reusable pull request");
   }
   const headRef = `${root}/git/ref/heads/${input.headBranch.split("/").map(encodeURIComponent).join("/")}`;
   const existingHead = await githubRequest<{ object: { sha: string } }>(headRef, token, undefined, [200, 404]);

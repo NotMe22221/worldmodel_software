@@ -21,7 +21,7 @@ export default function Home() {
       <nav aria-label="Main navigation">
         <a href="#platform">Product <small>⌄</small></a>
         <a href="#workflow">How it works</a>
-        <Link href="/trust">Docs</Link>
+        <Link href="/trust">Trust</Link>
         <a href="#security">Security</a>
         <Link href="/support">Resources <small>⌄</small></Link>
       </nav>
@@ -33,7 +33,7 @@ export default function Home() {
         <span className="warm-kicker">VERIFIED RELIABILITY ENGINEERING</span>
         <h1>Prove your<br />software is <em>ready</em><br />for what’s next.</h1>
         <p>Model your production system, rehearse high-impact failures, and verify every repair against the same evidence—before you ship.</p>
-        <div className="warm-hero-actions"><Link className="warm-button warm-button-large" href="/signup">Start free <Arrow /></Link><Link className="warm-button-quiet" href="/trust"><span aria-hidden="true">▣</span> Read docs</Link></div>
+        <div className="warm-hero-actions"><Link className="warm-button warm-button-large" href="/signup">Start free <Arrow /></Link><Link className="warm-button-quiet" href="/trust"><span aria-hidden="true">▣</span> Trust center</Link></div>
         <ul className="warm-proof-list" aria-label="Product assurances"><li><i>✓</i>Private by default</li><li><i>♙</i>Human-approved changes</li><li><i>⌘</i>Evidence-backed results</li></ul>
       </div>
 

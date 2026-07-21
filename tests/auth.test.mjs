@@ -92,6 +92,23 @@ test("registration rejects weak passwords and malformed emails", async () => {
   await assert.rejects(() => registerAccount({ email: "not-an-email", password: "short", displayName: "QA", organizationName: "QA Org" }), /valid business email/);
 });
 
+test("authentication routes reject oversized JSON before account or rate-limit work", async () => {
+  const [{ POST: login }, { POST: register }] = await Promise.all([
+    import("../app/api/auth/login/route.ts"),
+    import("../app/api/auth/register/route.ts"),
+  ]);
+  for (const [name, handler] of [["login", login], ["register", register]]) {
+    const response = await handler(new Request(`https://worldmodel.test/api/auth/${name}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(8_192) }),
+    }));
+    assert.equal(response.status, 413, name);
+    assert.match(response.headers.get("cache-control") || "", /no-store/, name);
+    assert.deepEqual(await response.json(), { error: "Request body exceeds 8 KB" }, name);
+  }
+});
+
 test("public identity headers cannot bypass session authentication", async () => {
   const { registerAccount, createSession } = await import("../server/auth.ts");
   const { requestUser, requestIdentity } = await import("../server/request-identity.ts");

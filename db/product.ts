@@ -7,6 +7,9 @@ import { getRuntimeEnv, type RuntimeDatabase } from "@/server/runtime-env";
 import { getComposioGithubCommit, publishComposioGithubDraftFiles, type RepositorySource } from "@/server/composio";
 import { validateCampaign, validateJourney, validateManifest, type CampaignPlan, type JourneyDefinition, type WorldModelManifest } from "@/worldmodel/product-contracts";
 import { MAX_CANDIDATE_ARTIFACT_BYTES, verifyCandidateArtifact, type PublishableCandidateArtifact } from "@/worldmodel/candidate-artifact";
+import { campaignReplayRowsSql, requestCampaignCancellation } from "@/worldmodel/campaign-runs.mjs";
+import { persistMappedModelVersion } from "./model-version-import";
+import { deterministicDraftPrBranch, draftPrPublicationLeaseExpired } from "./draft-pr-publication";
 
 async function runtimeDb() { const db = (await getRuntimeEnv()).DB; if (!db) throw new Error("database_unavailable: Durable database is unavailable"); return db; }
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -18,6 +21,8 @@ async function ensureReportApprovalArtifactColumns(db: RuntimeDatabase) {
     ["artifact_ref", "TEXT"],
     ["artifact_sha256", "TEXT"],
     ["artifact_size_bytes", "INTEGER"],
+    ["pr_branch", "TEXT"],
+    ["pr_started_at", "TEXT"],
   ];
   for (const [name, type] of additions) {
     if (existing.has(name)) continue;
@@ -54,7 +59,7 @@ export async function ensureProductSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS patch_candidates (id TEXT PRIMARY KEY, investigation_id TEXT NOT NULL, workspace_id TEXT NOT NULL, strategy TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', patch_ref TEXT, changed_files_json TEXT NOT NULL DEFAULT '[]', tests_json TEXT NOT NULL DEFAULT '[]', gates_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}', score INTEGER, risks_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS verification_runs (id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL, workspace_id TEXT NOT NULL, scenario_fingerprint TEXT NOT NULL, seed TEXT NOT NULL, status TEXT NOT NULL, metrics_json TEXT NOT NULL DEFAULT '{}', gates_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS decision_reports (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, project_id TEXT NOT NULL, run_id TEXT NOT NULL, candidate_id TEXT, status TEXT NOT NULL DEFAULT 'draft', report_json TEXT NOT NULL, artifact_ref TEXT, share_token_hash TEXT, visibility TEXT NOT NULL DEFAULT 'private', published_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS report_approvals (report_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approved_by TEXT NOT NULL, approved_at TEXT NOT NULL, decision_note TEXT NOT NULL, artifact_ref TEXT, artifact_sha256 TEXT, artifact_size_bytes INTEGER, pr_status TEXT NOT NULL DEFAULT 'not_requested', pr_url TEXT, pr_number INTEGER, published_at TEXT)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS report_approvals (report_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approved_by TEXT NOT NULL, approved_at TEXT NOT NULL, decision_note TEXT NOT NULL, artifact_ref TEXT, artifact_sha256 TEXT, artifact_size_bytes INTEGER, pr_status TEXT NOT NULL DEFAULT 'not_requested', pr_branch TEXT, pr_started_at TEXT, pr_url TEXT, pr_number INTEGER, published_at TEXT)"),
   ]);
   await ensureReportApprovalArtifactColumns(db);
 }
@@ -78,7 +83,7 @@ export async function productSnapshot(email: string, projectId: string) {
     db.prepare("SELECT * FROM user_journeys WHERE workspace_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspaceId, projectId).all(),
     db.prepare("SELECT * FROM agent_conversations WHERE workspace_id = ? AND project_id = ? ORDER BY updated_at DESC LIMIT 20").bind(workspaceId, projectId).all(),
     db.prepare("SELECT * FROM campaigns WHERE workspace_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspaceId, projectId).all(),
-    db.prepare("SELECT cr.* FROM campaign_runs cr JOIN campaigns c ON c.id = cr.campaign_id WHERE cr.workspace_id = ? AND cr.project_id = ? ORDER BY cr.created_at DESC LIMIT 200").bind(workspaceId, projectId).all(),
+    db.prepare(campaignReplayRowsSql).bind(workspaceId, projectId).all(),
     db.prepare("SELECT r.* FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE r.project_id = ? AND p.workspace_id = ? AND r.status = 'verified' AND r.evidence_kind = 'observed' ORDER BY r.created_at DESC LIMIT 50").bind(projectId, workspaceId).all(),
     db.prepare("SELECT * FROM investigations WHERE workspace_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 20").bind(workspaceId, projectId).all(),
     db.prepare("SELECT pc.* FROM patch_candidates pc JOIN investigations i ON i.id = pc.investigation_id WHERE pc.workspace_id = ? AND i.project_id = ? ORDER BY pc.created_at DESC LIMIT 60").bind(workspaceId, projectId).all(),
@@ -132,9 +137,17 @@ export async function createModelVersionForProject(db: RuntimeDatabase, workspac
     && graph.branch === project.branch
     && String(graph.commitSha || "").toLowerCase() === input.commitSha.toLowerCase();
   if (project.repository_verified !== 1 || !project.scanned_at || !graphMatchesProject || nodes.length < 1 || nodes.length > 250 || edges.length > 500 || graphJson.length > 1_000_000) throw new Error("model_invalid: Model versions must come from the verified repository scan");
-  const modelId = id("model");
-  await db.prepare("INSERT INTO model_versions (id, workspace_id, project_id, commit_sha, graph_json, confidence) VALUES (?, ?, ?, ?, ?, ?)").bind(modelId, workspaceId, projectId, input.commitSha, graphJson, Math.max(0, Math.min(100, Math.round(input.confidence)))).run();
-  return db.prepare("SELECT * FROM model_versions WHERE id = ?").bind(modelId).first();
+  const confidence = Math.max(0, Math.min(100, Math.round(input.confidence)));
+  return persistMappedModelVersion(db, {
+    modelId: id("model"),
+    workspaceId,
+    projectId,
+    repository: String(graph.repository || ""),
+    branch: String(graph.branch || ""),
+    commitSha: input.commitSha,
+    graphJson,
+    confidence,
+  });
 }
 
 export async function approveModelVersion(email: string, projectId: string, modelVersionId: string, overrides: unknown = {}) {
@@ -267,14 +280,13 @@ export async function approveCampaign(email: string, projectId: string, campaign
 
 export async function cancelCampaign(email: string, projectId: string, campaignId: string) {
   const { db, workspaceId } = await context(email, projectId, true);
-  const campaign = await db.prepare("SELECT status FROM campaigns WHERE id = ? AND workspace_id = ? AND project_id = ?").bind(campaignId, workspaceId, projectId).first<Record<string, unknown>>();
-  if (!campaign) throw new Error("campaign_not_found: Campaign was not found");
-  if (!["dispatching", "queued", "running"].includes(String(campaign.status))) throw new Error("campaign_invalid_state: This campaign is already in a terminal state");
   const now = new Date().toISOString();
-  await db.batch([
-    db.prepare("UPDATE campaigns SET status = 'cancellation_requested', cancellation_requested_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(now, campaignId, workspaceId),
-    db.prepare("UPDATE campaign_runs SET status = 'cancellation_requested', updated_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND workspace_id = ? AND status IN ('queued','running')").bind(campaignId, workspaceId),
-  ]);
+  const claimed = await requestCampaignCancellation(db, campaignId, workspaceId, projectId, now);
+  if (!claimed) {
+    const campaign = await db.prepare("SELECT id FROM campaigns WHERE id = ? AND workspace_id = ? AND project_id = ?").bind(campaignId, workspaceId, projectId).first();
+    if (!campaign) throw new Error("campaign_not_found: Campaign was not found");
+    throw new Error("campaign_invalid_state: This campaign is already in a terminal state");
+  }
   await recordAudit({ workspaceId, actorEmail: email, action: "campaign.cancellation_requested", targetType: "campaign", targetId: campaignId, summary: "Requested campaign cancellation and runner cleanup" });
   return { campaignId, status: "cancellation_requested" };
 }
@@ -321,6 +333,8 @@ type CandidateArtifactBasis = {
   artifact_sha256: string;
   artifact_size_bytes: number;
   pr_status?: string;
+  pr_branch?: string | null;
+  pr_started_at?: string | null;
   pr_url?: string | null;
   pr_number?: number | null;
 };
@@ -370,7 +384,7 @@ async function decisionCandidateBasis(
   status: "ready" | "approved",
 ) {
   return db.prepare(
-    "SELECT dr.run_id, pc.patch_ref AS artifact_ref, ea.r2_key AS artifact_key, ea.sha256 AS artifact_sha256, ea.size_bytes AS artifact_size_bytes, ra.pr_status, ra.pr_url, ra.pr_number "
+    "SELECT dr.run_id, pc.patch_ref AS artifact_ref, ea.r2_key AS artifact_key, ea.sha256 AS artifact_sha256, ea.size_bytes AS artifact_size_bytes, ra.pr_status, ra.pr_branch, ra.pr_started_at, ra.pr_url, ra.pr_number "
     + "FROM decision_reports dr "
     + "JOIN patch_candidates pc ON pc.id = dr.candidate_id AND pc.workspace_id = dr.workspace_id "
     + "JOIN investigations i ON i.id = pc.investigation_id AND i.workspace_id = dr.workspace_id AND i.project_id = dr.project_id AND i.run_id = dr.run_id "
@@ -408,7 +422,8 @@ export async function publishDecisionDraftPr(email: string, projectId: string, r
   const row = await decisionCandidateBasis(db, workspaceId, projectId, reportId, "approved");
   if (!row) throw new Error("report_not_found: Approve a verified report before publishing a draft pull request");
   if (row.pr_status === "published" && row.pr_url && Number.isInteger(row.pr_number)) return { reportId, draft: true, url: row.pr_url, number: row.pr_number };
-  if (row.pr_status !== "not_requested") throw new Error("report_conflict: Draft pull request publication is already in progress");
+  if (!["not_requested", "publishing"].includes(String(row.pr_status))) throw new Error("report_conflict: Draft pull request publication is not in a recoverable state");
+  if (row.pr_status === "publishing" && !draftPrPublicationLeaseExpired(row.pr_started_at)) throw new Error("report_conflict: Draft pull request publication is already in progress");
   if (project.repository_verified !== 1) throw new Error("repository_not_connected: Reconnect and verify this repository before publishing");
   const evidence = await verifiedCandidateArtifact(row);
   await requireCandidateCommitBasis(db, workspaceId, projectId, row.run_id, evidence.commitSha);
@@ -418,11 +433,13 @@ export async function publishDecisionDraftPr(email: string, projectId: string, r
   ]);
   if (!composio?.connected_account_id && !githubApp?.installation_id) throw new Error("repository_not_connected: Reconnect this repository through Composio or the fallback GitHub App");
   const [owner, repository] = String(project.repository).split("/"); if (!owner || !repository) throw new Error("repository_invalid: GitHub repository name is invalid");
-  const branchReport = reportId.replace(/[^a-z0-9_-]/gi, "-").toLowerCase().slice(0, 100);
-  const branchSuffix = crypto.randomUUID().replaceAll("-", "");
-  const branch = `worldmodel/${branchReport}-${branchSuffix}`;
+  const branch = deterministicDraftPrBranch(reportId, row.artifact_sha256);
+  if (row.pr_branch && row.pr_branch !== branch) throw new Error("report_conflict: Draft pull request branch does not match the approved artifact");
+  const claimStartedAt = new Date().toISOString();
   const publishInput = { owner, repository, baseBranch: String(project.branch), baseSha: evidence.commitSha, headBranch: branch, title: `draft: verified ${evidence.strategy || "repair"} candidate`, body: `WorldModel verification report ${reportId}. This is a draft and must not be merged without human review.`, files: evidence.files, freshBranchFromBase: true };
-  const claimed = await db.prepare("UPDATE report_approvals SET pr_status = 'publishing' WHERE report_id = ? AND workspace_id = ? AND pr_status = 'not_requested' AND artifact_ref = ? AND lower(artifact_sha256) = lower(?) AND artifact_size_bytes = ?").bind(reportId, workspaceId, row.artifact_ref, row.artifact_sha256, row.artifact_size_bytes).run();
+  const claimed = row.pr_status === "not_requested"
+    ? await db.prepare("UPDATE report_approvals SET pr_status = 'publishing', pr_branch = ?, pr_started_at = ? WHERE report_id = ? AND workspace_id = ? AND pr_status = 'not_requested' AND artifact_ref = ? AND lower(artifact_sha256) = lower(?) AND artifact_size_bytes = ?").bind(branch, claimStartedAt, reportId, workspaceId, row.artifact_ref, row.artifact_sha256, row.artifact_size_bytes).run()
+    : await db.prepare("UPDATE report_approvals SET pr_branch = ?, pr_started_at = ? WHERE report_id = ? AND workspace_id = ? AND pr_status = 'publishing' AND coalesce(pr_branch, '') = ? AND coalesce(pr_started_at, '') = ? AND artifact_ref = ? AND lower(artifact_sha256) = lower(?) AND artifact_size_bytes = ?").bind(branch, claimStartedAt, reportId, workspaceId, String(row.pr_branch || ""), String(row.pr_started_at || ""), row.artifact_ref, row.artifact_sha256, row.artifact_size_bytes).run();
   if (Number(claimed.meta.changes || 0) !== 1) throw new Error("report_conflict: Draft pull request publication is already in progress");
   let published: { number: number; html_url: string; draft: boolean };
   try {
@@ -435,10 +452,10 @@ export async function publishDecisionDraftPr(email: string, projectId: string, r
     }
     if (!published.draft) throw new Error("github_invalid_response: GitHub did not confirm a draft pull request");
   } catch (error) {
-    await db.prepare("UPDATE report_approvals SET pr_status = 'not_requested' WHERE report_id = ? AND workspace_id = ? AND pr_status = 'publishing'").bind(reportId, workspaceId).run().catch(() => undefined);
+    await db.prepare("UPDATE report_approvals SET pr_status = 'not_requested', pr_started_at = NULL WHERE report_id = ? AND workspace_id = ? AND pr_status = 'publishing' AND pr_branch = ? AND pr_started_at = ?").bind(reportId, workspaceId, branch, claimStartedAt).run().catch(() => undefined);
     throw error;
   }
-  const stored = await db.prepare("UPDATE report_approvals SET pr_status='published', pr_url=?, pr_number=?, published_at=? WHERE report_id=? AND workspace_id=? AND pr_status = 'publishing' AND artifact_ref = ? AND lower(artifact_sha256) = lower(?) AND artifact_size_bytes = ?").bind(published.html_url, published.number, new Date().toISOString(), reportId, workspaceId, row.artifact_ref, row.artifact_sha256, row.artifact_size_bytes).run();
+  const stored = await db.prepare("UPDATE report_approvals SET pr_status='published', pr_url=?, pr_number=?, published_at=? WHERE report_id=? AND workspace_id=? AND pr_status = 'publishing' AND pr_branch = ? AND pr_started_at = ? AND artifact_ref = ? AND lower(artifact_sha256) = lower(?) AND artifact_size_bytes = ?").bind(published.html_url, published.number, new Date().toISOString(), reportId, workspaceId, branch, claimStartedAt, row.artifact_ref, row.artifact_sha256, row.artifact_size_bytes).run();
   if (Number(stored.meta.changes || 0) !== 1) throw new Error("report_conflict: The approved artifact changed while the draft pull request was published");
   await recordAudit({ workspaceId, actorEmail: email, action: "report.draft_pr_published", targetType: "decision_report", targetId: reportId, summary: `Explicitly published draft pull request #${published.number}`, metadata: { url: published.html_url } });
   return { reportId, draft: true, url: published.html_url, number: published.number };

@@ -2,6 +2,32 @@
 .decision-report footer button { border: 1px solid #cad6cf; background: #fff; color: #215f43; border-radius: 5px; min-height: 32px; padding: 0 11px; font: 700 8px/1 inherit; cursor: pointer; }
 .decision-report footer button:last-child { background: #14211b; color: #fff; border-color: #14211b; }
 .decision-report footer button:disabled { cursor: wait; opacity: .55; }
+.page-head > button:disabled { cursor: not-allowed; opacity: .58; }
+.campaign-plan { margin-top: 14px; border: 1px solid #d6dfda; border-radius: 10px; overflow: hidden; background: #f8faf9; }
+.campaign-plan > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #dce4df; background: #edf4f0; }
+.campaign-plan > header b { color: #245f43; font-size: 9px; letter-spacing: .1em; }
+.campaign-plan > header span { color: #63736b; font-size: 10px; }
+.campaign-plan > ol { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin: 0; padding: 12px; list-style: none; }
+.campaign-plan > ol > li { min-width: 0; padding: 12px; border: 1px solid #dce4df; border-radius: 8px; background: #fff; }
+.campaign-plan > ol > li > div { display: grid; grid-template-columns: 26px minmax(0,1fr) auto; align-items: center; gap: 8px; margin-bottom: 9px; }
+.campaign-plan > ol > li > div > i { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; background: #173c2b; color: #fff; font-size: 9px; font-style: normal; }
+.campaign-plan > ol > li > div > span { min-width: 0; display: flex; flex-direction: column; }
+.campaign-plan > ol > li > div b { overflow: hidden; color: #1c2923; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.campaign-plan code { overflow: hidden; margin-top: 3px; color: #6a7871; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.campaign-plan strong { color: #245f43; font-size: 11px; }
+.campaign-plan p { margin: 5px 0; color: #53635b; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.campaign-plan p b { color: #27362f; }
+.campaign-plan small { display: block; margin-top: 8px; color: #65766d; font-size: 9px; }
+.campaign-bindings { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 9px 0 0; }
+.campaign-bindings > div { min-width: 0; padding: 7px 8px; border-radius: 6px; background: #f3f6f4; }
+.campaign-bindings > div:last-child { grid-column: 1 / -1; }
+.campaign-bindings dt { color: #64736c; font-size: 8px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.campaign-bindings dd { min-width: 0; margin: 2px 0 0; }
+.campaign-bindings code { display: block; overflow: auto hidden; max-width: 100%; padding-bottom: 2px; text-overflow: clip; }
+.campaign-assumptions { padding: 12px 14px; border-top: 1px solid #dce4df; background: #fff; }
+.campaign-assumptions > b { color: #245f43; font-size: 9px; letter-spacing: .1em; }
+.campaign-assumptions ul { margin: 8px 0 0; padding-left: 18px; }
+.campaign-assumptions li,.campaign-assumptions p { margin: 4px 0; color: #53635b; font-size: 10px; line-height: 1.45; }
 .twin-replay { display: grid; grid-template-columns: 1fr 250px; gap: 14px; margin-top: 16px; }
 .twin-canvas { min-height: 390px; background: #101814; color: #dbe6df; border-radius: 8px; padding: 18px; }
 .twin-canvas > header { display: flex; justify-content: space-between; align-items: center; }
@@ -14,9 +40,13 @@
 .twin-nodes article.degraded i { background: #8b6719; color: #fff2be; }.twin-nodes article.failed i { background: #8f3b37; color: #fff; }.twin-nodes article.healthy i { background: #277c52; color: #fff; }
 .twin-nodes article div { display: flex; flex-direction: column; min-width: 0; }.twin-nodes b { overflow: hidden; text-overflow: ellipsis; font-size: 8px; }.twin-nodes small { color: #809189; font-size: 6px; margin-top: 3px; }
 .twin-canvas > footer { display: flex; gap: 12px; align-items: center; }.twin-canvas > footer input { flex: 1; accent-color: #65d79f; }.twin-canvas > footer span { font-size: 7px; color: #8b9b93; }
+.replay-error { margin: 12px 0 0; color: #ffc2b9; font-size: 10px; }
 .twin-inspector { background: #fff; border: 1px solid #d6dfda; border-radius: 8px; padding: 17px; overflow: hidden; }.twin-inspector h3 { font-size: 14px; margin: 8px 0; }.twin-inspector p { font-size: 8px; color: #6c7a73; }.twin-inspector div { display: flex; flex-direction: column; gap: 3px; border-top: 1px solid #e1e6e3; padding: 8px 0; }.twin-inspector div b { font-size: 6px; text-transform: uppercase; color: #79867f; }.twin-inspector code { font-size: 7px; overflow-wrap: anywhere; }
 .twin-replay > .live-replay { grid-column: 1 / -1; margin-top: 0; }
-@media (max-width: 800px) { .twin-replay { grid-template-columns: 1fr; }.twin-inspector { display: none; }.twin-nodes { grid-template-columns: repeat(2,1fr); } }
+.live-replay > div > article[role="button"] { cursor: pointer; }
+.live-replay > div > article[aria-current="step"] { background: #1a2c23; box-shadow: inset 3px 0 #65d79f; }
+.live-replay > div > article[role="button"]:focus-visible { outline: 2px solid #65d79f; outline-offset: -2px; }
+@media (max-width: 800px) { .campaign-plan > ol { grid-template-columns: 1fr; }.campaign-plan > header { align-items: flex-start; flex-direction: column; }.campaign-bindings { grid-template-columns: 1fr; }.campaign-bindings > div:last-child { grid-column: auto; }.twin-replay { grid-template-columns: 1fr; }.twin-inspector { display: block; }.twin-nodes { grid-template-columns: repeat(2,1fr); } }
 .environment-form .form-error { margin: 10px 0 0; padding: 10px 12px; border: 1px solid #d8958c; border-radius: 6px; background: #fff1ef; color: #8a2c22; font-size: 9px; }
 .journey-form > button { display: block; float: none; margin: 14px 0 0 auto; }
 

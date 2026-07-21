@@ -165,7 +165,64 @@ function utf8Base64(value: string) {
   return btoa(Array.from(new TextEncoder().encode(value), (byte) => String.fromCharCode(byte)).join(""));
 }
 
-export async function publishComposioGithubDraftFiles(input: { connectedAccountId: string; owner: string; repository: string; baseBranch: string; baseSha: string; headBranch: string; title: string; body: string; files: Array<{ path: string; content: string }>; freshBranchFromBase?: boolean }) {
+type ComposioDraftFilesInput = { connectedAccountId: string; owner: string; repository: string; baseBranch: string; baseSha: string; headBranch: string; title: string; body: string; files: Array<{ path: string; content: string }>; freshBranchFromBase?: boolean };
+type ComposioDraftPull = { number: number; html_url: string; draft: boolean };
+
+function sameComposioGithubSha(actual: unknown, expected: string) {
+  const value = text(actual);
+  return /^[a-f0-9]{40}$/i.test(value) && value.toLowerCase() === expected.toLowerCase();
+}
+
+function validatedComposioDraftPull(value: unknown, input: ComposioDraftFilesInput, expectedHeadSha: string) {
+  const pull = record(value);
+  const number = typeof pull.number === "number" ? pull.number : Number.NaN;
+  const htmlUrl = text(pull.html_url);
+  if (!Number.isSafeInteger(number) || number < 1 || !htmlUrl.startsWith("https://github.com/") || typeof pull.draft !== "boolean") throw new Error("Composio GitHub proxy returned an invalid draft pull request");
+  const head = record(pull.head);
+  const base = record(pull.base);
+  const fullName = `${input.owner}/${input.repository}`.toLowerCase();
+  if (
+    text(pull.state) !== "open"
+    || pull.merged_at != null
+    || pull.draft !== true
+    || text(head.ref) !== input.headBranch
+    || !sameComposioGithubSha(head.sha, expectedHeadSha)
+    || text(record(head.repo).full_name).toLowerCase() !== fullName
+    || text(base.ref) !== input.baseBranch
+    || text(record(base.repo).full_name).toLowerCase() !== fullName
+  ) {
+    throw new Error("github_conflict: Composio pull request is not an open draft at the verified branch head");
+  }
+  return { number, html_url: htmlUrl, draft: pull.draft } as ComposioDraftPull;
+}
+
+async function existingComposioDraftPull(root: string, input: ComposioDraftFilesInput, expectedHeadSha: string) {
+  const pulls = await executeGithubProxy(input.connectedAccountId, `${root}/pulls?state=all&head=${encodeURIComponent(`${input.owner}:${input.headBranch}`)}&base=${encodeURIComponent(input.baseBranch)}`, "GET");
+  if (!Array.isArray(pulls.data)) throw new Error("Composio GitHub proxy returned an invalid pull request list");
+  return pulls.data.length ? validatedComposioDraftPull(pulls.data[0], input, expectedHeadSha) : null;
+}
+
+async function verifiedComposioFreshBranchHead(root: string, input: ComposioDraftFilesInput, expectedTreeSha: string) {
+  const headPath = input.headBranch.split("/").map(encodeURIComponent).join("/");
+  const head = await executeGithubProxy(input.connectedAccountId, `${root}/git/ref/heads/${headPath}`, "GET", undefined, [200, 404]);
+  if (Number(head.status) === 404) return null;
+  const headData = record(head.data);
+  const headSha = text(record(headData.object).sha);
+  if (!/^[a-f0-9]{40}$/i.test(headSha)) throw new Error("Composio returned an invalid draft branch");
+  const commit = record((await executeGithubProxy(input.connectedAccountId, `${root}/git/commits/${headSha}`, "GET")).data);
+  const parents = Array.isArray(commit.parents) ? commit.parents.map(record) : [];
+  if (
+    !sameComposioGithubSha(commit.sha, headSha)
+    || !sameComposioGithubSha(record(commit.tree).sha, expectedTreeSha)
+    || parents.length !== 1
+    || !sameComposioGithubSha(parents[0].sha, input.baseSha)
+  ) {
+    throw new Error("Composio draft branch conflicts with the approved repair candidate");
+  }
+  return headSha;
+}
+
+export async function publishComposioGithubDraftFiles(input: ComposioDraftFilesInput) {
   if (!/^[A-Za-z0-9_.-]{1,100}$/.test(input.owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(input.repository) || !/^[A-Za-z0-9._/-]{1,120}$/.test(input.baseBranch) || !/^[a-f0-9]{40}$/i.test(input.baseSha) || !/^worldmodel\/[a-z0-9._/-]{3,180}$/i.test(input.headBranch)) throw new Error("Composio draft branch basis is invalid");
   if (!input.files.length || input.files.length > 30) throw new Error("Composio draft requires 1-30 bounded files");
   for (const file of input.files) if (!/^[A-Za-z0-9_.\/-]{1,240}$/.test(file.path) || file.path.startsWith("/") || file.path.split("/").includes("..") || file.path.toLowerCase().startsWith(".github/workflows/") || file.content.length > 1_000_000) throw new Error(`Composio draft file is prohibited: ${file.path}`);
@@ -182,12 +239,23 @@ export async function publishComposioGithubDraftFiles(input: { connectedAccountI
     }
     const tree = record((await executeGithubProxy(input.connectedAccountId, `${root}/git/trees`, "POST", { base_tree: text(baseTree.sha), tree: treeEntries }, [201])).data);
     if (!/^[a-f0-9]{40}$/i.test(text(tree.sha))) throw new Error("Composio returned an invalid candidate tree");
-    const commit = record((await executeGithubProxy(input.connectedAccountId, `${root}/git/commits`, "POST", { message: "fix: WorldModel verified repair candidate", tree: text(tree.sha), parents: [input.baseSha] }, [201])).data);
-    if (!/^[a-f0-9]{40}$/i.test(text(commit.sha))) throw new Error("Composio returned an invalid candidate commit");
-    await executeGithubProxy(input.connectedAccountId, `${root}/git/refs`, "POST", { ref: `refs/heads/${input.headBranch}`, sha: text(commit.sha) }, [201]);
-    const created = record((await executeGithubProxy(input.connectedAccountId, `${root}/pulls`, "POST", { title: input.title, head: input.headBranch, base: input.baseBranch, body: input.body, draft: true, maintainer_can_modify: true }, [201])).data);
-    if (typeof created.number !== "number" || !text(created.html_url)) throw new Error("Composio GitHub proxy returned an invalid draft pull request");
-    return { number: created.number, html_url: text(created.html_url), draft: created.draft === true };
+    const candidateTreeSha = text(tree.sha);
+    let headSha = await verifiedComposioFreshBranchHead(root, input, candidateTreeSha);
+    if (!headSha) {
+      const commit = record((await executeGithubProxy(input.connectedAccountId, `${root}/git/commits`, "POST", { message: "fix: WorldModel verified repair candidate", tree: candidateTreeSha, parents: [input.baseSha] }, [201])).data);
+      if (!/^[a-f0-9]{40}$/i.test(text(commit.sha))) throw new Error("Composio returned an invalid candidate commit");
+      const createdRef = await executeGithubProxy(input.connectedAccountId, `${root}/git/refs`, "POST", { ref: `refs/heads/${input.headBranch}`, sha: text(commit.sha) }, [201, 422]);
+      if (Number(createdRef.status) === 201) headSha = text(commit.sha);
+      else headSha = await verifiedComposioFreshBranchHead(root, input, candidateTreeSha);
+      if (!headSha) throw new Error("Composio draft branch creation conflicted without a reusable branch");
+    }
+    const existingPull = await existingComposioDraftPull(root, input, headSha);
+    if (existingPull) return existingPull;
+    const created = await executeGithubProxy(input.connectedAccountId, `${root}/pulls`, "POST", { title: input.title, head: input.headBranch, base: input.baseBranch, body: input.body, draft: true, maintainer_can_modify: true }, [201, 422]);
+    if (Number(created.status) === 201) return validatedComposioDraftPull(created.data, input, headSha);
+    const racedPull = await existingComposioDraftPull(root, input, headSha);
+    if (racedPull) return racedPull;
+    throw new Error("Composio draft pull request creation conflicted without a reusable pull request");
   }
   const headPath = input.headBranch.split("/").map(encodeURIComponent).join("/");
   const existingHead = await executeGithubProxy(input.connectedAccountId, `${root}/git/ref/heads/${headPath}`, "GET", undefined, [200, 404]);

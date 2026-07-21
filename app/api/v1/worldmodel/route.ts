@@ -7,7 +7,7 @@ function errorResponse(error: unknown, correlationId: string) {
   const separator = raw.indexOf(":");
   const code = separator > 0 ? raw.slice(0, separator).trim() : "internal_error";
   const message = separator > 0 ? raw.slice(separator + 1).trim() : raw;
-  const status = code === "unauthorized" ? 401 : code === "request_too_large" ? 413 : code.endsWith("_not_found") ? 404 : code.includes("not_configured") || code === "project_not_ready" || code.includes("limit") ? 409 : code.includes("invalid") ? 400 : code.includes("unauthorized") ? 403 : code.includes("request_failed") ? 502 : 500;
+  const status = code === "unauthorized" ? 401 : code === "request_too_large" ? 413 : code.endsWith("_not_found") ? 404 : code.endsWith("_conflict") || code.includes("not_configured") || code === "project_not_ready" || code.includes("limit") ? 409 : code.includes("invalid") ? 400 : code.includes("unauthorized") ? 403 : code.includes("request_failed") ? 502 : 500;
   return Response.json({ error: { code, message, retriable: status >= 500 || code === "runner_not_configured", correlationId } }, { status, headers: { "x-correlation-id": correlationId } });
 }
 

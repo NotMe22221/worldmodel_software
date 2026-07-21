@@ -48,8 +48,8 @@ import {
   githubRepositoryParts,
 } from "../worldmodel/github-pr-contract.mjs";
 import { parseOperatorEmails, parseOperatorUserIds } from "../server/runtime-config.ts";
-import { expectedRunnerWorkflowRef, runnerOidcClaimsMatch } from "../server/github-oidc.ts";
-import { readBoundedRequestText, RequestBodyTooLargeError } from "../server/bounded-request-body.ts";
+import { expectedRunnerWorkflowRef, requiredRunnerTokenSecret, runnerOidcClaimsMatch } from "../server/github-oidc.ts";
+import { readBoundedRequestJson, readBoundedRequestText, RequestBodyTooLargeError } from "../server/bounded-request-body.ts";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(
@@ -285,6 +285,13 @@ test("GitHub runner identity is bound to the generated workflow, branch, and dis
   assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef, workflow_sha: "not-a-commit", event_name: "workflow_dispatch" }, input), false);
 });
 
+test("runner token signing requires a trimmed secret of at least 32 UTF-8 bytes", () => {
+  assert.throws(() => requiredRunnerTokenSecret(undefined), /at least 32 UTF-8 bytes/);
+  assert.throws(() => requiredRunnerTokenSecret("x".repeat(31)), /at least 32 UTF-8 bytes/);
+  assert.throws(() => requiredRunnerTokenSecret(` ${"x".repeat(31)} `), /at least 32 UTF-8 bytes/);
+  assert.equal(requiredRunnerTokenSecret(` ${"x".repeat(32)} `), "x".repeat(32));
+});
+
 test("runner token route exposes workflow verification outages as retriable", async () => {
   const source = await readFile(new URL("../app/api/v1/runner/token/route.ts", import.meta.url), "utf8");
   assert.match(source, /runner_verification_unavailable/);
@@ -359,6 +366,8 @@ test("runner evidence body is capped by streamed UTF-8 bytes even without a trus
   });
   await assert.rejects(() => readBoundedRequestText(multibyte, 3), RequestBodyTooLargeError);
   assert.equal(await readBoundedRequestText(new Request("https://worldmodel.example", { method: "POST", body: "💥" }), 4), "💥");
+  assert.deepEqual(await readBoundedRequestJson(new Request("https://worldmodel.example", { method: "POST", body: '{"ok":true}' }), 32), { ok: true });
+  await assert.rejects(() => readBoundedRequestJson(new Request("https://worldmodel.example", { method: "POST", body: "not-json" }), 32), SyntaxError);
 });
 
 test("runner evidence route marks persistence and configuration failures retriable", async () => {

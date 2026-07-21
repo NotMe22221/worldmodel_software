@@ -37,3 +37,7 @@ export async function readBoundedRequestText(request: Request, maxBytes: number)
     reader.releaseLock();
   }
 }
+
+export async function readBoundedRequestJson<T>(request: Request, maxBytes: number) {
+  return JSON.parse(await readBoundedRequestText(request, maxBytes)) as T;
+}

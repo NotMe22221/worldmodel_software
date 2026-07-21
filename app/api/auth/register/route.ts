@@ -1,5 +1,6 @@
 import { AccountUnavailableError, AuthInputError, consumeAuthRateLimit, createSession, registerAccount, sessionCookie } from "../../../../server/auth.ts";
 import { provisionCustomerWorkspace } from "../../../../db/saas.ts";
+import { readBoundedRequestJson, RequestBodyTooLargeError } from "../../../../server/bounded-request-body.ts";
 
 const NO_STORE = { "cache-control": "private, no-store, max-age=0" };
 
@@ -9,7 +10,11 @@ function unavailable() {
 
 export async function POST(request: Request) {
   let input: { email?: string; password?: string; displayName?: string; organizationName?: string };
-  try { input = await request.json(); } catch { return Response.json({ error: "A valid JSON body is required" }, { status: 400, headers: NO_STORE }); }
+  try { input = await readBoundedRequestJson(request, 8_192); }
+  catch (error) {
+    const tooLarge = error instanceof RequestBodyTooLargeError;
+    return Response.json({ error: tooLarge ? "Request body exceeds 8 KB" : "A valid JSON body is required" }, { status: tooLarge ? 413 : 400, headers: NO_STORE });
+  }
   let rateLimit;
   try { rateLimit = await consumeAuthRateLimit("register", input.email || "", request); }
   catch { return unavailable(); }

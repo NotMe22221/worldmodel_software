@@ -31,6 +31,10 @@ const unsafeLocalFlags = ["WORLDMODEL_LOCAL_RUNTIME", "LOCAL_DEVELOPMENT", "COMP
 if (unsafeLocalFlags.length) {
   throw new Error(`Vercel cannot run with local-only flags enabled: ${unsafeLocalFlags.join(", ")}. Remove them from the deployment environment.`);
 }
+const runnerTokenSecret = process.env.RUNNER_TOKEN_SECRET?.trim();
+if (runnerTokenSecret && new TextEncoder().encode(runnerTokenSecret).byteLength < 32) {
+  throw new Error("RUNNER_TOKEN_SECRET must contain at least 32 UTF-8 bytes. Generate a new value with `openssl rand -hex 32`.");
+}
 const missingStorage = storageVariables.filter((key) => !process.env[key]?.trim());
 if (missingStorage.length) {
   const message = `Vercel Turso storage is not configured. Missing: ${missingStorage.join(", ")}. Connect Turso to this Vercel project before deploying.`;

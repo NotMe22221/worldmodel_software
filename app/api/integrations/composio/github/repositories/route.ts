@@ -1,7 +1,9 @@
 import { disconnectComposioGithub, importComposioGithubRepository, syncComposioGithubConnection } from "@/db/composio";
+import { readBoundedRequestJson, RequestBodyTooLargeError } from "@/server/bounded-request-body";
 import { requestIdentity } from "@/server/request-identity";
 
 type Action = { action?: "sync" | "import" | "disconnect"; connectionId?: string; repositoryId?: string };
+const MAX_COMPOSIO_ACTION_BODY_BYTES = 8_192;
 
 function failure(error: unknown, correlationId: string) {
   const message = error instanceof Error ? error.message : "Composio GitHub request failed";
@@ -14,8 +16,11 @@ export async function POST(request: Request) {
   const email = await requestIdentity(request);
   if (!email) return Response.json({ error: { message: "Authentication required", code: "AUTH_REQUIRED", retriable: false, correlationId } }, { status: 401 });
   let payload: Action;
-  try { payload = await request.json() as Action; }
-  catch { return Response.json({ error: { message: "A valid JSON body is required", code: "INVALID_JSON", retriable: false, correlationId } }, { status: 400 }); }
+  try { payload = await readBoundedRequestJson<Action>(request, MAX_COMPOSIO_ACTION_BODY_BYTES); }
+  catch (error) {
+    const tooLarge = error instanceof RequestBodyTooLargeError;
+    return Response.json({ error: { message: tooLarge ? "Request body exceeds 8 KB" : "A valid JSON body is required", code: tooLarge ? "REQUEST_TOO_LARGE" : "INVALID_JSON", retriable: false, correlationId } }, { status: tooLarge ? 413 : 400 });
+  }
   try {
     if (payload.action === "sync" && payload.connectionId) return Response.json({ repositories: await syncComposioGithubConnection(email, payload.connectionId), correlationId });
     if (payload.action === "import" && payload.repositoryId) return Response.json({ project: await importComposioGithubRepository(email, payload.repositoryId), correlationId }, { status: 201 });

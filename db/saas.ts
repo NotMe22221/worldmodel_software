@@ -359,8 +359,20 @@ export async function createProjectForWorkspace(workspaceId: string, actorEmail:
   const id = `proj_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const sourceKind = input.sourceKind === "github" ? "github" : "manual";
   const repositoryVerified = sourceKind === "github" && input.repositoryVerified === true;
-  const inserted = await db.prepare("INSERT INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) SELECT ?, ?, ?, ?, ?, ?, ?, ?, 0, 0 WHERE (SELECT COUNT(*) FROM projects WHERE workspace_id = ?) < ?").bind(id, workspaceId, name, repository, branch, sourceKind, repositoryVerified ? 1 : 0, sourceKind === "github" ? "scanning" : "unverified", workspaceId, entitlements.limits.projects).run();
-  if (Number(inserted.meta.changes || 0) !== 1) throw new Error(`${entitlements.planName} plan project limit reached`);
+  const insertSql = sourceKind === "github"
+    ? "INSERT INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) SELECT ?, ?, ?, ?, ?, ?, ?, ?, 0, 0 WHERE (SELECT COUNT(*) FROM projects WHERE workspace_id = ?) < ? AND NOT EXISTS (SELECT 1 FROM projects WHERE workspace_id = ? AND lower(repository) = lower(?))"
+    : "INSERT INTO projects (id, workspace_id, name, repository, branch, source_kind, repository_verified, status, resilience_score, service_count) SELECT ?, ?, ?, ?, ?, ?, ?, ?, 0, 0 WHERE (SELECT COUNT(*) FROM projects WHERE workspace_id = ?) < ?";
+  const prepared = db.prepare(insertSql);
+  const inserted = sourceKind === "github"
+    ? await prepared.bind(id, workspaceId, name, repository, branch, sourceKind, repositoryVerified ? 1 : 0, "scanning", workspaceId, entitlements.limits.projects, workspaceId, repository).run()
+    : await prepared.bind(id, workspaceId, name, repository, branch, sourceKind, 0, "unverified", workspaceId, entitlements.limits.projects).run();
+  if (Number(inserted.meta.changes || 0) !== 1) {
+    if (sourceKind === "github") {
+      const existing = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? AND lower(repository) = lower(?) LIMIT 1").bind(workspaceId, repository).first();
+      if (existing) return existing;
+    }
+    throw new Error(`${entitlements.planName} plan project limit reached`);
+  }
   await recordAudit({ workspaceId, actorEmail: actor, action: "project.created", targetType: "project", targetId: id, summary: `Connected ${repository}`, metadata: { branch, sourceKind, repositoryVerified } });
   return db.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
 }

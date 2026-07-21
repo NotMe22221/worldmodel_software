@@ -10,8 +10,8 @@ export default function SecurityPage() {
       <PolicySection title="Access and tenant isolation">
         <ul>
           <li>
-            Private deployment access and signed-in identity are provided by the
-            hosting platform.
+            Protected workspace data requires an application-managed signed-in
+            session; public marketing and policy pages expose no tenant data.
           </li>
           <li>
             Every workspace mutation performs a server-side membership and role

@@ -1,5 +1,8 @@
 import { getOperatorSnapshot, updateOperatorSupportCase } from "@/db/operator";
+import { readBoundedRequestJson, RequestBodyTooLargeError } from "@/server/bounded-request-body";
 import { requestUser } from "@/server/request-identity";
+
+const MAX_OPERATOR_BODY_BYTES = 8_192;
 
 function failure(error: unknown) {
   const message =
@@ -39,11 +42,12 @@ export async function POST(request: Request) {
     note?: string;
   };
   try {
-    payload = await request.json();
-  } catch {
+    payload = await readBoundedRequestJson(request, MAX_OPERATOR_BODY_BYTES);
+  } catch (error) {
+    const tooLarge = error instanceof RequestBodyTooLargeError;
     return Response.json(
-      { error: "A valid JSON request body is required" },
-      { status: 400 },
+      { error: tooLarge ? "Request body exceeds 8 KB" : "A valid JSON request body is required" },
+      { status: tooLarge ? 413 : 400 },
     );
   }
   if (

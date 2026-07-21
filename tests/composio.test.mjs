@@ -12,6 +12,18 @@ const BASE_TREE_SHA = "b".repeat(40);
 const BLOB_SHA = "c".repeat(40);
 const CANDIDATE_TREE_SHA = "d".repeat(40);
 const CANDIDATE_COMMIT_SHA = "e".repeat(40);
+
+function draftPull(number = 42, headSha = CANDIDATE_COMMIT_SHA) {
+  return {
+    number,
+    html_url: `https://github.com/octocat/Hello-World/pull/${number}`,
+    draft: true,
+    state: "open",
+    merged_at: null,
+    head: { ref: "worldmodel/report-contract-fresh-1234567890", sha: headSha, repo: { full_name: "octocat/Hello-World" } },
+    base: { ref: "master", repo: { full_name: "octocat/Hello-World" } },
+  };
+}
 const EXPECTED_WORKFLOW = "name: WorldModel verified runner\n";
 
 function attemptDatabase() {
@@ -33,6 +45,8 @@ function providerFetch() {
   let callbackUrl = "";
   let userId = "";
   const calls = [];
+  const refs = new Map();
+  const pullRequests = new Map();
   const fetch = async (input, init = {}) => {
     const url = new URL(String(input));
     const body = init.body ? JSON.parse(String(init.body)) : {};
@@ -49,15 +63,37 @@ function providerFetch() {
       if (body.endpoint.endsWith(`/tarball/${COMMIT_SHA}`)) return Response.json({ status: 200, data: null, binary_data: { url: "https://downloads.example.test/repository.tar.gz?signature=fixture", content_type: "application/gzip", size: 4096, expires_at: new Date(Date.now() + 300_000).toISOString() } });
       if (body.endpoint.includes("/.github/workflows/worldmodel-proj_verified.yml") && body.method === "GET") return Response.json({ status: 200, data: { type: "file", encoding: "base64", content: Buffer.from(EXPECTED_WORKFLOW).toString("base64"), size: Buffer.byteLength(EXPECTED_WORKFLOW) } });
       if (body.endpoint.endsWith(`/git/commits/${COMMIT_SHA}`) && body.method === "GET") return Response.json({ status: 200, data: { sha: COMMIT_SHA, tree: { sha: BASE_TREE_SHA } } });
+      if (body.endpoint.endsWith(`/git/commits/${CANDIDATE_COMMIT_SHA}`) && body.method === "GET") return Response.json({ status: 200, data: { sha: CANDIDATE_COMMIT_SHA, tree: { sha: CANDIDATE_TREE_SHA }, parents: [{ sha: COMMIT_SHA }] } });
       if (body.endpoint.endsWith("/git/blobs") && body.method === "POST") return Response.json({ status: 201, data: { sha: BLOB_SHA } });
       if (body.endpoint.endsWith("/git/trees") && body.method === "POST") return Response.json({ status: 201, data: { sha: CANDIDATE_TREE_SHA } });
       if (body.endpoint.endsWith("/git/commits") && body.method === "POST") return Response.json({ status: 201, data: { sha: CANDIDATE_COMMIT_SHA } });
-      if (body.endpoint.includes("/git/ref/heads/") && body.method === "GET") return Response.json({ status: 404, data: { message: "Not Found" } });
-      if (body.endpoint.endsWith("/git/refs") && body.method === "POST") return Response.json({ status: 201, data: { ref: body.body.ref } });
+      if (body.endpoint.includes("/git/ref/heads/") && body.method === "GET") {
+        const branch = body.endpoint.split("/git/ref/heads/")[1];
+        const sha = refs.get(branch);
+        return sha ? Response.json({ status: 200, data: { object: { sha } } }) : Response.json({ status: 404, data: { message: "Not Found" } });
+      }
+      if (body.endpoint.endsWith("/git/refs") && body.method === "POST") {
+        const branch = String(body.body.ref).replace(/^refs\/heads\//, "");
+        if (refs.has(branch)) return Response.json({ status: 422, data: { message: "Reference already exists" } });
+        refs.set(branch, body.body.sha);
+        return Response.json({ status: 201, data: { ref: body.body.ref } });
+      }
       if (body.endpoint.includes("/contents/") && body.method === "GET") return Response.json({ status: 404, data: { message: "Not Found" } });
       if (body.endpoint.includes("/contents/") && body.method === "PUT") return Response.json({ status: 201, data: { content: { path: "src/repair.ts" } } });
-      if (body.endpoint.includes("/pulls?") && body.method === "GET") return Response.json({ status: 200, data: [] });
-      if (body.endpoint.endsWith("/pulls") && body.method === "POST") return Response.json({ status: 201, data: { number: 42, html_url: "https://github.com/octocat/Hello-World/pull/42", draft: true } });
+      if (body.endpoint.includes("/pulls?") && body.method === "GET") {
+        const query = new URL(body.endpoint);
+        const requestedHead = query.searchParams.get("head") || "";
+        const branch = requestedHead.includes(":") ? requestedHead.slice(requestedHead.indexOf(":") + 1) : requestedHead;
+        const existing = pullRequests.get(`${branch}|${query.searchParams.get("base") || ""}`);
+        return Response.json({ status: 200, data: existing ? [existing] : [] });
+      }
+      if (body.endpoint.endsWith("/pulls") && body.method === "POST") {
+        const key = `${body.body.head}|${body.body.base}`;
+        if (pullRequests.has(key)) return Response.json({ status: 422, data: { message: "A pull request already exists" } });
+        const created = draftPull();
+        pullRequests.set(key, created);
+        return Response.json({ status: 201, data: created });
+      }
       throw new Error(`Unexpected Composio proxy request: ${body.method} ${body.endpoint}`);
     }
     if (url.pathname.includes("/tools/execute/")) {
@@ -112,7 +148,7 @@ test("Composio client creates a hosted link, verifies the account, filters repos
     const freshPublished = await publishComposioGithubDraftFiles({ connectedAccountId: account.id, owner: "octocat", repository: "Hello-World", baseBranch: "master", baseSha: tree.commitSha, headBranch: "worldmodel/report-contract-fresh-1234567890", title: "draft: verified repair", body: "Fixture verification report", files: [{ path: "src/repair.ts", content: "export const repaired = true;\n" }], freshBranchFromBase: true });
     assert.deepEqual(freshPublished, { number: 42, html_url: "https://github.com/octocat/Hello-World/pull/42", draft: true });
     const freshCalls = provider.calls.slice(freshCallsStart).map((call) => call.body).filter((body) => body?.endpoint);
-    assert.equal(freshCalls.some((body) => body.method === "GET" && body.endpoint.includes("/git/ref/heads/")), false);
+    assert.equal(freshCalls.some((body) => body.method === "GET" && body.endpoint.includes("/git/ref/heads/")), true);
     assert.equal(freshCalls.some((body) => body.endpoint.includes("/contents/src/repair.ts")), false);
     const freshTree = freshCalls.find((body) => body.method === "POST" && body.endpoint.endsWith("/git/trees"));
     assert.equal(freshTree.body.base_tree, BASE_TREE_SHA);
@@ -123,7 +159,65 @@ test("Composio client creates a hosted link, verifies the account, filters repos
     const freshRef = freshCalls.find((body) => body.method === "POST" && body.endpoint.endsWith("/git/refs"));
     assert.equal(freshRef.body.sha, CANDIDATE_COMMIT_SHA);
     assert.equal(freshRef.body.ref, "refs/heads/worldmodel/report-contract-fresh-1234567890");
+    assert.ok(freshCalls.some((body) => body.method === "GET" && body.endpoint.includes("/pulls?state=all")));
+
+    const freshRetryCallsStart = provider.calls.length;
+    const freshRetry = await publishComposioGithubDraftFiles({ connectedAccountId: account.id, owner: "octocat", repository: "Hello-World", baseBranch: "master", baseSha: tree.commitSha, headBranch: "worldmodel/report-contract-fresh-1234567890", title: "draft: verified repair", body: "Fixture verification report", files: [{ path: "src/repair.ts", content: "export const repaired = true;\n" }], freshBranchFromBase: true });
+    assert.deepEqual(freshRetry, freshPublished);
+    const freshRetryCalls = provider.calls.slice(freshRetryCallsStart).map((call) => call.body).filter((body) => body?.endpoint);
+    assert.ok(freshRetryCalls.some((body) => body.method === "GET" && body.endpoint.endsWith(`/git/commits/${CANDIDATE_COMMIT_SHA}`)));
+    assert.ok(freshRetryCalls.some((body) => body.method === "GET" && body.endpoint.includes("/pulls?")));
+    assert.equal(freshRetryCalls.some((body) => body.method === "POST" && body.endpoint.endsWith("/git/commits")), false);
+    assert.equal(freshRetryCalls.some((body) => body.method === "POST" && body.endpoint.endsWith("/git/refs")), false);
+    assert.equal(freshRetryCalls.some((body) => body.method === "POST" && body.endpoint.endsWith("/pulls")), false);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("Composio fresh draft retries reject an existing branch with a different generated tree", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init = {}) => {
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    assert.equal(init.headers["x-api-key"], process.env.COMPOSIO_API_KEY);
+    assert.equal(body.connected_account_id, "ca_contract");
+    if (body.endpoint.endsWith(`/git/commits/${COMMIT_SHA}`) && body.method === "GET") return Response.json({ status: 200, data: { sha: COMMIT_SHA, tree: { sha: BASE_TREE_SHA } } });
+    if (body.endpoint.endsWith("/git/blobs") && body.method === "POST") return Response.json({ status: 201, data: { sha: BLOB_SHA } });
+    if (body.endpoint.endsWith("/git/trees") && body.method === "POST") return Response.json({ status: 201, data: { sha: CANDIDATE_TREE_SHA } });
+    if (body.endpoint.includes("/git/ref/heads/worldmodel/") && body.method === "GET") return Response.json({ status: 200, data: { object: { sha: CANDIDATE_COMMIT_SHA } } });
+    if (body.endpoint.endsWith(`/git/commits/${CANDIDATE_COMMIT_SHA}`) && body.method === "GET") return Response.json({ status: 200, data: { sha: CANDIDATE_COMMIT_SHA, tree: { sha: "1".repeat(40) }, parents: [{ sha: COMMIT_SHA }] } });
+    throw new Error(`Unexpected Composio conflict request: ${body.method} ${body.endpoint}`);
+  };
+  try {
+    const { publishComposioGithubDraftFiles } = await import("../server/composio.ts");
+    await assert.rejects(
+      publishComposioGithubDraftFiles({ connectedAccountId: "ca_contract", owner: "octocat", repository: "Hello-World", baseBranch: "master", baseSha: COMMIT_SHA, headBranch: "worldmodel/report-contract-fresh-1234567890", title: "draft: verified repair", body: "Fixture verification report", files: [{ path: "src/repair.ts", content: "export const repaired = true;\n" }], freshBranchFromBase: true }),
+      /draft branch conflicts with the approved repair candidate/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Composio fresh draft retries reject a closed or merged historical pull request", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init = {}) => {
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    if (body.endpoint.endsWith(`/git/commits/${COMMIT_SHA}`) && body.method === "GET") return Response.json({ status: 200, data: { sha: COMMIT_SHA, tree: { sha: BASE_TREE_SHA } } });
+    if (body.endpoint.endsWith("/git/blobs") && body.method === "POST") return Response.json({ status: 201, data: { sha: BLOB_SHA } });
+    if (body.endpoint.endsWith("/git/trees") && body.method === "POST") return Response.json({ status: 201, data: { sha: CANDIDATE_TREE_SHA } });
+    if (body.endpoint.includes("/git/ref/heads/worldmodel/") && body.method === "GET") return Response.json({ status: 200, data: { object: { sha: CANDIDATE_COMMIT_SHA } } });
+    if (body.endpoint.endsWith(`/git/commits/${CANDIDATE_COMMIT_SHA}`) && body.method === "GET") return Response.json({ status: 200, data: { sha: CANDIDATE_COMMIT_SHA, tree: { sha: CANDIDATE_TREE_SHA }, parents: [{ sha: COMMIT_SHA }] } });
+    if (body.endpoint.includes("/pulls?") && body.method === "GET") return Response.json({ status: 200, data: [{ ...draftPull(), state: "closed", merged_at: "2026-01-01T00:00:00Z" }] });
+    throw new Error(`Unexpected Composio closed-pull request: ${body.method} ${body.endpoint}`);
+  };
+  try {
+    const { publishComposioGithubDraftFiles } = await import("../server/composio.ts");
+    await assert.rejects(
+      publishComposioGithubDraftFiles({ connectedAccountId: "ca_contract", owner: "octocat", repository: "Hello-World", baseBranch: "master", baseSha: COMMIT_SHA, headBranch: "worldmodel/report-contract-fresh-1234567890", title: "draft: verified repair", body: "Fixture verification report", files: [{ path: "src/repair.ts", content: "export const repaired = true;\n" }], freshBranchFromBase: true }),
+      /not an open draft at the verified branch head/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("local OAuth callbacks preserve the browser host so host-only sessions survive", async () => {

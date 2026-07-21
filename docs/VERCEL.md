@@ -46,7 +46,8 @@ secrets needed for the features you intend to enable:
 - OpenAI: `OPENAI_API_KEY`, optionally `OPENAI_AGENT_MODEL`
 - Stripe: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
   `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_PRO`
-- GitHub Actions evidence exchange: `RUNNER_TOKEN_SECRET`
+- GitHub Actions evidence exchange: `RUNNER_TOKEN_SECRET` (at least 32 random
+  bytes; generate one with `openssl rand -hex 32`)
 - Internal access: `WORLDMODEL_OPERATOR_EMAILS` and matching immutable account IDs in `WORLDMODEL_OPERATOR_USER_IDS` (both are required in production)
 
 For a scoped Composio project key, grant Connected accounts read/write and
@@ -56,6 +57,14 @@ publication. Never place a provider key in source control or a support message.
 
 Use the deployed origin for OAuth callbacks and `/api/billing/webhook` for the
 Stripe webhook. Store secrets separately in Preview and Production.
+
+If Deployment Protection covers an environment, API keys alone do not bypass
+that Vercel access layer. Create a project-scoped **Protection Bypass for
+Automation** secret, store it in the CI provider's secret manager, and send it
+as the recommended `x-vercel-protection-bypass` request header in addition to
+the WorldModel bearer key. Rotate or revoke it from Vercel project settings;
+never commit it. See Vercel's [Protection Bypass for Automation](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation)
+documentation.
 
 ## Execution boundary
 

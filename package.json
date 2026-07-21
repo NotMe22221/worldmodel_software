@@ -13,7 +13,7 @@
     "start": "next start",
     "test": "npm run build:local && npm run test:unit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "test:unit": "node --test tests/auth.test.mjs tests/composio.test.mjs tests/github-publish.test.mjs tests/product-contracts.test.mjs tests/vercel-runtime.test.mjs tests/workspace-onboarding.test.mjs tests/worldmodel-engine.test.mjs tests/virtual-environment.test.mjs sample-app/tests/*.spec.mjs",
+    "test:unit": "node --test tests/auth.test.mjs tests/bounded-mutation-routes.test.mjs tests/composio.test.mjs tests/github-publish.test.mjs tests/product-contracts.test.mjs tests/vercel-runtime.test.mjs tests/workspace-onboarding.test.mjs tests/worldmodel-engine.test.mjs tests/virtual-environment.test.mjs sample-app/tests/*.spec.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

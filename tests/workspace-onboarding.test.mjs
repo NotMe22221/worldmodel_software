@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -21,15 +22,16 @@ async function signRunnerToken({ workspaceId, projectId, runId, repository, jti 
   return `${header}.${payload}.${base64url(new Uint8Array(signature))}`;
 }
 
-async function signGithubOidc(claims) {
-  const pair = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
-  const kid = `runner-test-${crypto.randomUUID()}`;
+async function signGithubOidc(claims, signer) {
+  const pair = signer?.pair || await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  const kid = signer?.jwk.kid || `runner-test-${crypto.randomUUID()}`;
   const header = base64url(JSON.stringify({ alg: "RS256", kid }));
   const payload = base64url(JSON.stringify(claims));
   const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(`${header}.${payload}`));
   return {
     token: `${header}.${payload}.${base64url(new Uint8Array(signature))}`,
-    jwk: { ...await crypto.subtle.exportKey("jwk", pair.publicKey), kid },
+    jwk: signer?.jwk || { ...await crypto.subtle.exportKey("jwk", pair.publicKey), kid },
+    pair,
   };
 }
 
@@ -399,6 +401,199 @@ test("verified repository remapping refreshes an existing project's default bran
   });
 });
 
+test("GitHub importers promote a same-repository first-create race through the verified mapping boundary", async () => {
+  const { createProjectForWorkspace, provisionCustomerWorkspace } = await import("../db/saas.ts");
+  const { refreshVerifiedProjectMapping } = await import("../db/repository-mapping.ts");
+  const { getRuntimeEnv } = await import("../server/runtime-env.ts");
+  const unique = crypto.randomUUID().replaceAll("-", "");
+  const email = `github.first-create-race.${unique}@example.test`;
+  const repository = `example/first-create-race-${unique.slice(0, 12)}`;
+  const workspace = await provisionCustomerWorkspace(email, "First Create Race");
+  const manual = await createProjectForWorkspace(workspace.workspace.id, email, {
+    name: "Manual collision",
+    repository,
+    branch: "legacy",
+  });
+  const raced = await createProjectForWorkspace(workspace.workspace.id, email, {
+    name: "Verified import",
+    repository,
+    branch: "main",
+    sourceKind: "github",
+    repositoryVerified: true,
+  });
+  assert.equal(raced?.id, manual?.id, "the conditional insert returns the concurrently created repository row");
+
+  const db = (await getRuntimeEnv()).DB;
+  assert.ok(db);
+  await refreshVerifiedProjectMapping(db, {
+    workspaceId: workspace.workspace.id,
+    projectId: raced.id,
+    defaultBranch: "main",
+    graphJson: '{"version":1,"source":"github_tree","nodes":[],"edges":[]}',
+    scanSummary: "Verified current repository mapping",
+    serviceCount: 0,
+  });
+  const mapped = await db.prepare("SELECT source_kind, repository_verified, branch, status FROM projects WHERE id = ? AND workspace_id = ?").bind(raced.id, workspace.workspace.id).first();
+  assert.deepEqual({ ...mapped }, { source_kind: "github", repository_verified: 1, branch: "main", status: "ready" });
+
+  const githubImporter = await readFile(new URL("../db/business.ts", import.meta.url), "utf8");
+  const composioImporter = await readFile(new URL("../db/composio.ts", import.meta.url), "utf8");
+  const githubImport = githubImporter.match(/export async function importGithubRepository[\s\S]*?(?=export async function billingContext)/)?.[0] || "";
+  const composioImport = composioImporter.match(/export async function importComposioGithubRepository[\s\S]*?(?=export async function disconnectComposioGithub)/)?.[0] || "";
+  assert.equal((githubImport.match(/refreshVerifiedProjectMapping\(db/g) || []).length, 2);
+  assert.equal((composioImport.match(/refreshVerifiedProjectMapping\(db/g) || []).length, 2);
+  assert.doesNotMatch(githubImport, /UPDATE projects SET graph_json/);
+  assert.doesNotMatch(composioImport, /UPDATE projects SET graph_json/);
+});
+
+test("concurrent repository imports cannot persist a model from a stale project mapping", async () => {
+  const { createProject, provisionCustomerWorkspace } = await import("../db/saas.ts");
+  const { persistMappedModelVersion } = await import("../db/model-version-import.ts");
+  const { refreshVerifiedProjectMapping } = await import("../db/repository-mapping.ts");
+  const { getRuntimeEnv } = await import("../server/runtime-env.ts");
+  const { buildRepositoryGraph } = await import("../worldmodel/repository-graph.mjs");
+  const unique = crypto.randomUUID().replaceAll("-", "");
+  const email = `github.model-race.${unique}@example.test`;
+  const repository = `example/model-race-${unique.slice(0, 12)}`;
+  const workspace = await provisionCustomerWorkspace(email, "Model Import Race");
+  const project = await createProject(email, {
+    name: "Model Import Race",
+    repository,
+    branch: "main",
+    sourceKind: "github",
+    repositoryVerified: true,
+  });
+  const db = (await getRuntimeEnv()).DB;
+  assert.ok(db);
+  await ensureRunnerTestSchema(db);
+
+  const staleCommit = "a".repeat(40);
+  const currentCommit = "b".repeat(40);
+  const staleGraph = buildRepositoryGraph(["package.json", "apps/legacy/package.json"], { repository, branch: "main", commitSha: staleCommit });
+  const currentGraph = buildRepositoryGraph(["package.json", "apps/current/package.json"], { repository, branch: "main", commitSha: currentCommit });
+  await refreshVerifiedProjectMapping(db, {
+    workspaceId: workspace.workspace.id,
+    projectId: project.id,
+    defaultBranch: "main",
+    graphJson: JSON.stringify(staleGraph),
+    scanSummary: "Stale import paused after reading this mapping",
+    serviceCount: staleGraph.nodes.length,
+  });
+  const staleMapping = await db.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(project.id, workspace.workspace.id).first();
+  assert.ok(staleMapping);
+
+  await refreshVerifiedProjectMapping(db, {
+    workspaceId: workspace.workspace.id,
+    projectId: project.id,
+    defaultBranch: "main",
+    graphJson: JSON.stringify(currentGraph),
+    scanSummary: "Newer concurrent import replaced the mapping",
+    serviceCount: currentGraph.nodes.length,
+  });
+  const currentMapping = await db.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(project.id, workspace.workspace.id).first();
+  assert.ok(currentMapping);
+
+  let releaseRace;
+  const raceGate = new Promise((resolve) => { releaseRace = resolve; });
+  const staleAttempt = (async () => {
+    await raceGate;
+    return persistMappedModelVersion(db, {
+      modelId: `model_stale_${unique}`,
+      workspaceId: workspace.workspace.id,
+      projectId: project.id,
+      repository,
+      branch: "main",
+      commitSha: staleCommit,
+      graphJson: JSON.stringify(staleGraph),
+      confidence: 85,
+    });
+  })();
+  const currentAttempt = (async () => {
+    await raceGate;
+    return persistMappedModelVersion(db, {
+      modelId: `model_current_${unique}`,
+      workspaceId: workspace.workspace.id,
+      projectId: project.id,
+      repository,
+      branch: "main",
+      commitSha: currentCommit,
+      graphJson: JSON.stringify(currentGraph),
+      confidence: 85,
+    });
+  })();
+  releaseRace();
+  const [staleResult, currentResult] = await Promise.allSettled([staleAttempt, currentAttempt]);
+
+  assert.equal(staleResult.status, "rejected");
+  assert.match(String(staleResult.reason?.message || staleResult.reason), /model_conflict: Repository mapping changed/);
+  assert.equal(currentResult.status, "fulfilled");
+  const models = await db.prepare("SELECT commit_sha, graph_json FROM model_versions WHERE workspace_id = ? AND project_id = ?").bind(workspace.workspace.id, project.id).all();
+  assert.equal(models.results.length, 1);
+  assert.equal(models.results[0].commit_sha, currentCommit);
+  assert.equal(models.results[0].graph_json, JSON.stringify(currentGraph));
+});
+
+test("identical concurrent repository imports reuse one model version", async () => {
+  const { createProject, provisionCustomerWorkspace } = await import("../db/saas.ts");
+  const { persistMappedModelVersion } = await import("../db/model-version-import.ts");
+  const { refreshVerifiedProjectMapping } = await import("../db/repository-mapping.ts");
+  const { getRuntimeEnv } = await import("../server/runtime-env.ts");
+  const { buildRepositoryGraph } = await import("../worldmodel/repository-graph.mjs");
+  const unique = crypto.randomUUID().replaceAll("-", "");
+  const email = `github.model-idempotency.${unique}@example.test`;
+  const repository = `example/model-idempotency-${unique.slice(0, 12)}`;
+  const workspace = await provisionCustomerWorkspace(email, "Idempotent Model Import");
+  const project = await createProject(email, {
+    name: "Idempotent Model Import",
+    repository,
+    branch: "main",
+    sourceKind: "github",
+    repositoryVerified: true,
+  });
+  const db = (await getRuntimeEnv()).DB;
+  assert.ok(db);
+  await ensureRunnerTestSchema(db);
+
+  const commitSha = "c".repeat(40);
+  const graph = buildRepositoryGraph(["package.json", "apps/web/package.json"], { repository, branch: "main", commitSha });
+  await refreshVerifiedProjectMapping(db, {
+    workspaceId: workspace.workspace.id,
+    projectId: project.id,
+    defaultBranch: "main",
+    graphJson: JSON.stringify(graph),
+    scanSummary: "One immutable repository graph",
+    serviceCount: graph.nodes.length,
+  });
+  const mapped = await db.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(project.id, workspace.workspace.id).first();
+  assert.ok(mapped);
+
+  const imports = await Promise.all(Array.from({ length: 8 }, (_, index) =>
+    persistMappedModelVersion(db, {
+      modelId: `model_idempotent_${index}_${unique}`,
+      workspaceId: workspace.workspace.id,
+      projectId: project.id,
+      repository,
+      branch: "main",
+      commitSha,
+      graphJson: JSON.stringify(graph),
+      confidence: 90,
+    })));
+  assert.equal(new Set(imports.map((model) => model?.id)).size, 1);
+  const persisted = await db.prepare("SELECT id, commit_sha, graph_json, confidence FROM model_versions WHERE workspace_id = ? AND project_id = ?").bind(workspace.workspace.id, project.id).all();
+  assert.equal(persisted.results.length, 1);
+  assert.deepEqual({
+    id: persisted.results[0].id,
+    commitSha: persisted.results[0].commit_sha,
+    graphJson: persisted.results[0].graph_json,
+    confidence: persisted.results[0].confidence,
+  }, {
+    id: imports[0]?.id,
+    commitSha,
+    graphJson: JSON.stringify(graph),
+    confidence: 90,
+  });
+});
+
 test("runtime schema upgrade preserves subscriptions while adding the Stripe event clock", async () => {
   const { ensureSaasSchema, provisionCustomerWorkspace } = await import("../db/saas.ts");
   const { getRuntimeEnv } = await import("../server/runtime-env.ts");
@@ -529,6 +724,40 @@ test("modeled planning runs cannot be promoted or reported as verified evidence"
   assert.deepEqual({ ...audit }, { action: "simulation.modeled" });
 });
 
+test("a cold unknown GitHub OIDC key performs only one JWKS fetch", async () => {
+  const audience = "https://worldmodel.example/api/v1/runner/token";
+  const now = Math.floor(Date.now() / 1000);
+  const claims = {
+    iss: "https://token.actions.githubusercontent.com",
+    aud: audience,
+    exp: now + 300,
+    nbf: now - 5,
+    repository: "example/cold-unknown",
+    ref: "refs/heads/main",
+    workflow_ref: "example/cold-unknown/.github/workflows/worldmodel-proj_cold.yml@refs/heads/main",
+    workflow_sha: "b".repeat(40),
+    event_name: "workflow_dispatch",
+  };
+  const tokenSigner = await signGithubOidc(claims);
+  const publishedSigner = await signGithubOidc(claims);
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return Response.json({ keys: [publishedSigner.jwk] });
+  };
+  try {
+    const { exchangeRunnerOidc } = await import(`../server/github-oidc.ts?cold-unknown=${crypto.randomUUID()}`);
+    await assert.rejects(
+      () => exchangeRunnerOidc({ oidcToken: tokenSigner.token, audience, projectId: "proj_cold", runId: "crun_cold" }),
+      /GitHub OIDC signing key was not found/,
+    );
+    assert.equal(fetches, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("runner OIDC exchange returns only the approved immutable execution descriptor", async () => {
   const fixture = await runnerFixture();
   const { exchangeRunnerOidc } = await import("../server/github-oidc.ts");
@@ -578,10 +807,12 @@ test("runner OIDC exchange returns only the approved immutable execution descrip
   };
   try {
     await fixture.db.prepare("UPDATE environment_revisions SET status = 'draft' WHERE id = ?").bind(fixture.environmentId).run();
-    await assert.rejects(
-      () => exchangeRunnerOidc({ oidcToken: signed.token, audience, projectId: fixture.projectId, runId: fixture.runId }, verifyWorkflow),
-      /not bound to an approved GitHub Actions environment/,
-    );
+    const coldStart = await Promise.allSettled([
+      exchangeRunnerOidc({ oidcToken: signed.token, audience, projectId: fixture.projectId, runId: fixture.runId }, verifyWorkflow),
+      exchangeRunnerOidc({ oidcToken: signed.token, audience, projectId: fixture.projectId, runId: fixture.runId }, verifyWorkflow),
+    ]);
+    assert.equal(coldStart.every((result) => result.status === "rejected" && /not bound to an approved GitHub Actions environment/.test(result.reason.message)), true);
+    assert.equal(fetches, 1, "concurrent cold-start verification should share one JWKS request");
     assert.equal(workflowVerifications, 0);
     await fixture.db.prepare("UPDATE environment_revisions SET status = 'approved' WHERE id = ?").bind(fixture.environmentId).run();
     const result = await exchangeRunnerOidc({ oidcToken: signed.token, audience, projectId: fixture.projectId, runId: fixture.runId }, verifyWorkflow);
@@ -605,15 +836,22 @@ test("runner OIDC exchange returns only the approved immutable execution descrip
     assert.equal(fetches, 2, "an unknown key id should force exactly one JWKS refresh");
     assert.equal(workflowVerifications, 1, "a successful workflow revision verification should be cached for five minutes");
 
-    const mismatched = await signGithubOidc({ ...oidcClaims, workflow_sha: "c".repeat(40) });
-    keys = [mismatched.jwk];
+    const unknown = await signGithubOidc(oidcClaims);
+    keys = [unknown.jwk];
+    await assert.rejects(
+      () => exchangeRunnerOidc({ oidcToken: unknown.token, audience, projectId: fixture.projectId, runId: fixture.runId }, verifyWorkflow),
+      /GitHub OIDC signing key was not found/,
+    );
+    assert.equal(fetches, 2, "unknown key ids inside the cooldown must not bypass the JWKS cache");
+
+    const mismatched = await signGithubOidc({ ...oidcClaims, workflow_sha: "c".repeat(40) }, rotated);
+    keys = [rotated.jwk];
     await assert.rejects(
       () => exchangeRunnerOidc({ oidcToken: mismatched.token, audience, projectId: fixture.projectId, runId: fixture.runId }, async () => false),
       /signed GitHub workflow revision does not match/,
     );
 
-    const unavailable = await signGithubOidc({ ...oidcClaims, workflow_sha: "d".repeat(40) });
-    keys = [unavailable.jwk];
+    const unavailable = await signGithubOidc({ ...oidcClaims, workflow_sha: "d".repeat(40) }, rotated);
     await assert.rejects(
       () => exchangeRunnerOidc({ oidcToken: unavailable.token, audience, projectId: fixture.projectId, runId: fixture.runId }, async () => { throw new Error("provider offline"); }),
       /runner_verification_unavailable:/,
@@ -677,6 +915,26 @@ test("signed runner evidence persists one verified observed run and is replay-sa
     { sequence: 1, type: "verification.completed", source: "github_actions", journey_id: fixture.journeyId, evidence_ref: first.simulationRunId },
     { sequence: 2, type: "run.completed", source: "github_actions", journey_id: fixture.journeyId, evidence_ref: first.simulationRunId },
   ]);
+  const { campaignReplayRowsSql } = await import("../worldmodel/campaign-runs.mjs");
+  const replayRows = await fixture.db.prepare(campaignReplayRowsSql).bind(fixture.workspaceId, fixture.projectId).all();
+  const replayRow = replayRows.results.find((row) => row.id === fixture.runId);
+  assert.deepEqual({
+    id: replayRow?.id,
+    simulationRunId: replayRow?.simulation_run_id,
+    scenario: replayRow?.scenario,
+    status: replayRow?.status,
+    errorRate: replayRow?.error_rate,
+    latencyMs: replayRow?.latency_ms,
+    journeySuccess: replayRow?.journey_success,
+  }, {
+    id: fixture.runId,
+    simulationRunId: first.simulationRunId,
+    scenario: fixture.scenario.name,
+    status: "completed",
+    errorRate: "1.2%",
+    latencyMs: 640,
+    journeySuccess: 99,
+  });
 
   const replay = await acceptRunnerEvidence(token, JSON.stringify(evidence));
   assert.deepEqual(replay, { ...first, duplicate: true });
@@ -733,4 +991,20 @@ test("valid evidence after cancellation links the observation but terminates as 
   assert.deepEqual({ ...campaign }, { status: "cancelled" });
   assert.deepEqual({ ...simulation }, { status: "verified", evidence_kind: "observed" });
   assert.deepEqual({ ...terminal }, { type: "run.cancelled" });
+});
+
+test("campaign cancellation cannot overwrite a terminal state won by runner evidence", async () => {
+  const fixture = await runnerFixture();
+  const { requestCampaignCancellation } = await import("../worldmodel/campaign-runs.mjs");
+  const staleCampaign = await fixture.db.prepare("SELECT status FROM campaigns WHERE id = ?").bind(fixture.campaignId).first();
+  assert.deepEqual({ ...staleCampaign }, { status: "queued" });
+  await fixture.db.prepare("UPDATE campaigns SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(fixture.campaignId).run();
+
+  const claimed = await requestCampaignCancellation(fixture.db, fixture.campaignId, fixture.workspaceId, fixture.projectId, new Date().toISOString());
+
+  assert.equal(claimed, false);
+  const campaign = await fixture.db.prepare("SELECT status, cancellation_requested_at FROM campaigns WHERE id = ?").bind(fixture.campaignId).first();
+  const run = await fixture.db.prepare("SELECT status FROM campaign_runs WHERE id = ?").bind(fixture.runId).first();
+  assert.deepEqual({ ...campaign }, { status: "completed", cancellation_requested_at: null });
+  assert.deepEqual({ ...run }, { status: "queued" });
 });
