@@ -1821,9 +1821,9 @@ export default function Dashboard() {
                           )}
                           {data.operatorAccess ? (
                             <a className="secondary-integration" href="/settings/providers">View platform setup instructions →</a>
-                          ) : (
-                            <button className="secondary-integration" disabled>Connect GitHub →</button>
-                          )}
+                          ) : canAdminWorkspace ? (
+                            <button className="secondary-integration" disabled={creating} onClick={() => (location.href = "/api/integrations/composio/github/start")}>Connect GitHub →</button>
+                          ) : <small>Ask a workspace owner or administrator to connect GitHub.</small>}
                         </div>
                       )}
                       {data.configuration.composio.githubConfigured && !canAdminWorkspace && <small>Ask a workspace owner or administrator to connect GitHub.</small>}

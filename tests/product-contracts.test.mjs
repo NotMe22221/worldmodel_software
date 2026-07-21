@@ -73,7 +73,7 @@ test("GitHub connection stays one-click for workspace users while provider setup
 
   assert.match(dashboard, /You will not need a Composio account or API key/);
   assert.match(dashboard, /data\.operatorAccess \? \([\s\S]*View platform setup instructions/);
-  assert.match(dashboard, /<button className="secondary-integration" disabled>Connect GitHub/);
+  assert.match(dashboard, /canAdminWorkspace \? \([\s\S]*\/api\/integrations\/composio\/github\/start/);
   assert.match(saasRoute, /operatorAccess[\s\S]*missing: \[\]/);
   assert.match(providerRoute, /Platform operator access required/);
   assert.match(providerLayout, /mode\.editable && !localOwner/);

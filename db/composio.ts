@@ -2,13 +2,13 @@ import { createProjectForWorkspace, ensureSaasSchema, getSaasSnapshot, requireRo
 import { recordAudit } from "./audit.ts";
 import { createModelVersionForProject } from "./product.ts";
 import { getRuntimeEnv } from "../server/runtime-env.ts";
-import { composioConfiguration } from "../server/runtime-config.ts";
 import {
   createComposioGithubLink,
   getComposioConnectedAccount,
   getComposioGithubIdentity,
   getComposioGithubTree,
   listComposioGithubRepositories,
+  resolveComposioGithubAuthConfigId,
   revokeComposioConnection,
   type ComposioGithubRepository,
 } from "../server/composio.ts";
@@ -54,7 +54,6 @@ function lifecycleLog(level: "info" | "warn", event: string, correlationId: stri
 export async function beginComposioGithubConnection(email: string, callbackUrl: string, correlationId = crypto.randomUUID()) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin"]);
-  const config = await composioConfiguration();
   const workspaceId = String(snapshot.workspace.id);
   const userId = await composioUserId(workspaceId, email);
   const state = `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
@@ -67,8 +66,8 @@ export async function beginComposioGithubConnection(email: string, callbackUrl: 
   const expiresAt = new Date(Number.isFinite(providerExpiry) ? Math.min(hardExpiry, providerExpiry) : hardExpiry).toISOString();
   const db = await getD1();
   await cleanupComposioConnectionAttempts(db, new Date().toISOString());
-  await db.prepare("INSERT INTO composio_connection_attempts (state_hash, workspace_id, created_by, composio_user_id, connected_account_id, auth_config_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(stateHash, workspaceId, email.toLowerCase(), userId, link.connectedAccountId, config.githubAuthConfigId, expiresAt).run();
-  await recordAudit({ workspaceId, actorEmail: email, action: "composio.github.started", targetType: "integration", targetId: link.connectedAccountId, summary: "Started a hosted GitHub connection through Composio", metadata: { authConfigId: config.githubAuthConfigId } });
+  await db.prepare("INSERT INTO composio_connection_attempts (state_hash, workspace_id, created_by, composio_user_id, connected_account_id, auth_config_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(stateHash, workspaceId, email.toLowerCase(), userId, link.connectedAccountId, link.authConfigId, expiresAt).run();
+  await recordAudit({ workspaceId, actorEmail: email, action: "composio.github.started", targetType: "integration", targetId: link.connectedAccountId, summary: "Started a hosted GitHub connection through Composio", metadata: { authConfigId: link.authConfigId } });
   lifecycleLog("info", "connection_start", correlationId, { workspaceId, outcome: "started" });
   return { redirectUrl: link.redirectUrl, connectedAccountId: link.connectedAccountId, expiresAt };
 }
@@ -153,13 +152,13 @@ export async function completeComposioGithubConnection(email: string | null, sta
 export async function recoverComposioGithubConnection(email: string, correlationId = crypto.randomUUID()) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin"]);
-  const config = await composioConfiguration();
+  const authConfigId = await resolveComposioGithubAuthConfigId();
   const workspaceId = String(snapshot.workspace.id);
   const expectedUserId = await composioUserId(workspaceId, email);
   const db = await getD1();
   const now = new Date().toISOString();
   await cleanupComposioConnectionAttempts(db, now);
-  const candidate = await newestRecoverableComposioConnectionAttempt(db, { workspaceId, email, composioUserId: expectedUserId, authConfigId: config.githubAuthConfigId, now });
+  const candidate = await newestRecoverableComposioConnectionAttempt(db, { workspaceId, email, composioUserId: expectedUserId, authConfigId, now });
   if (!candidate) {
     lifecycleLog("info", "connection_recovery", correlationId, { workspaceId, outcome: "not_found", reason: "no_recoverable_attempt" });
     return null;

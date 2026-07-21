@@ -94,15 +94,55 @@ function validateConnectUrl(value: unknown, baseUrl: string, fixtureMode: boolea
   return target.toString();
 }
 
+function validAuthConfigId(value: unknown) {
+  const id = text(value);
+  return /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : "";
+}
+
+function managedGithubAuthConfigId(value: unknown) {
+  const item = record(value);
+  const toolkit = record(item.toolkit);
+  return text(toolkit.slug).toLowerCase() === "github"
+    && item.is_composio_managed === true
+    && text(item.status).toUpperCase() === "ENABLED"
+    ? validAuthConfigId(item.id)
+    : "";
+}
+
+export async function resolveComposioGithubAuthConfigId() {
+  const config = await composioConfiguration();
+  if (config.githubAuthConfigId) return config.githubAuthConfigId;
+
+  const query = new URLSearchParams({ toolkit_slug: "github", is_composio_managed: "true", show_disabled: "false", limit: "100" });
+  const listed = record(await composioFetch(`/auth_configs?${query}`));
+  const existing = (Array.isArray(listed.items) ? listed.items : [])
+    .map(managedGithubAuthConfigId)
+    .find(Boolean);
+  if (existing) return existing;
+
+  const created = record(await composioFetch("/auth_configs", {
+    method: "POST",
+    body: JSON.stringify({ toolkit: { slug: "github" } }),
+  }));
+  const authConfig = record(created.auth_config);
+  const createdId = text(record(created.toolkit).slug).toLowerCase() === "github"
+    && authConfig.is_composio_managed === true
+    ? validAuthConfigId(authConfig.id)
+    : "";
+  if (!createdId) throw new Error("Composio returned an invalid managed GitHub auth config");
+  return createdId;
+}
+
 export async function createComposioGithubLink(userId: string, callbackUrl: string) {
   if (!/^wm_[a-f0-9]{40}$/.test(userId)) throw new Error("Composio user identity is invalid");
   const callback = new URL(callbackUrl);
   if (callback.protocol !== "https:" && !(callback.protocol === "http:" && ["127.0.0.1", "localhost"].includes(callback.hostname))) throw new Error("Composio callback URL is not allowed");
   const config = await composioConfiguration();
+  const authConfigId = await resolveComposioGithubAuthConfigId();
   const payload = record(await composioFetch("/connected_accounts/link", {
     method: "POST",
     body: JSON.stringify({
-      auth_config_id: config.githubAuthConfigId,
+      auth_config_id: authConfigId,
       user_id: userId,
       callback_url: callback.toString(),
     }),
@@ -111,6 +151,7 @@ export async function createComposioGithubLink(userId: string, callbackUrl: stri
   const linkToken = text(payload.link_token);
   if (!connectedAccountId || !linkToken) throw new Error("Composio returned an incomplete connection link");
   return {
+    authConfigId,
     connectedAccountId,
     redirectUrl: validateConnectUrl(payload.redirect_url, config.baseUrl, config.fixtureMode),
     expiresAt: text(payload.expires_at) || new Date(Date.now() + 10 * 60_000).toISOString(),

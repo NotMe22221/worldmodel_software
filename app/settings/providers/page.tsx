@@ -23,7 +23,7 @@ export default function ProviderSettingsPage() {
   const [mode, setMode] = useState<ProviderMode | null>(null);
   const missingComposioSettings = configuration.composio?.missing?.length
     ? configuration.composio.missing
-    : ["COMPOSIO_API_KEY", "COMPOSIO_GITHUB_AUTH_CONFIG_ID"];
+    : ["COMPOSIO_API_KEY"];
 
   useEffect(() => {
     const controller = new AbortController();
@@ -38,7 +38,7 @@ export default function ProviderSettingsPage() {
         setMode(result.mode || { editable: false, source: "deployment_environment" });
         const missing = result.configuration?.composio?.missing || [];
         setStatus(result.configuration?.composio?.configured
-          ? "Composio credentials are present. The key, auth config, and GitHub consent are verified when an owner starts the connection."
+          ? "The Composio project key is present. WorldModel resolves or creates the managed GitHub auth config when an owner connects."
           : `Composio setup is incomplete${missing.length ? `: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing` : ""}.`);
       })
       .catch((reason) => {
@@ -82,7 +82,7 @@ export default function ProviderSettingsPage() {
       <div className="provider-instructions">
         <b>Primary connection path</b>
         <code>Composio Connect Link → GitHub OAuth → WorldModel callback</code>
-        <small>Create a Composio-managed GitHub auth config and use a scoped project API key. Grant Connected accounts read/write and Tool execution write; add Proxy execute write when repository archives, signed runner-workflow verification, or approved draft PR publication are enabled.</small>
+        <small>Add one scoped Composio project API key. WorldModel reuses an enabled managed GitHub auth config or creates one automatically. Grant Auth configs read/write, Connected accounts read/write, and Tool execution write; add Proxy execute write when repository archives, signed runner-workflow verification, or approved draft PR publication are enabled.</small>
       </div>
       {mode === null && !error && <div className="provider-loading" role="status">Checking how this deployment manages provider credentials…</div>}
       {mode && !mode.editable && <section className="provider-deployment" aria-labelledby="deployment-provider-title">
@@ -96,7 +96,7 @@ export default function ProviderSettingsPage() {
                 <small>{name === "COMPOSIO_API_KEY" ? "Least-privilege project API key from Composio." : "The Composio auth config configured for GitHub."}</small>
               </li>)}
             </ol></>}
-        <p>For a scoped key, allow Connected accounts read/write and Tool execution write. Proxy execute write is also required for immutable archive downloads, exact runner-workflow revision verification, and approved draft PR publication.</p>
+        <p>For a scoped key, allow Auth configs read/write, Connected accounts read/write, and Tool execution write. Proxy execute write is also required for immutable archive downloads, exact runner-workflow revision verification, and approved draft PR publication.</p>
         <p>Keep “Automatically expose System Environment Variables” enabled so Vercel supplies the callback origin. Set <code>WORLDMODEL_PUBLIC_ORIGIN</code> only to select a different canonical HTTPS domain.</p>
         <p className="provider-safety">Never paste API keys into support messages, source control, or this page.</p>
         <div className="provider-actions">
@@ -107,7 +107,7 @@ export default function ProviderSettingsPage() {
       </section>}
       {mode?.editable && <form onSubmit={submit} aria-busy={working}>
         <label>Composio project API key<input name="composioApiKey" type="password" autoComplete="off" placeholder={configuration.composio?.configured ? "Configured — enter only to rotate" : "ak_…"} required={!configuration.composio?.configured} /></label>
-        <label>GitHub auth config ID<input name="composioGithubAuthConfigId" placeholder={configuration.composio?.configured ? "Configured — enter only to change" : "ac_…"} required={!configuration.composio?.configured} /></label>
+        <label>GitHub auth config ID (optional override)<input name="composioGithubAuthConfigId" placeholder="Auto-managed when left blank" /></label>
         <label>OpenAI API key (optional)<input name="openaiApiKey" type="password" autoComplete="off" /></label>
         <label>OpenAI model<input name="openaiModel" defaultValue="gpt-5.6" /></label>
         <details>

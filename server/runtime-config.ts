@@ -5,7 +5,6 @@ type RuntimeEnvironment = Record<string, string | undefined>;
 
 export const COMPOSIO_REQUIRED_ENVIRONMENT_VARIABLES = [
   "COMPOSIO_API_KEY",
-  "COMPOSIO_GITHUB_AUTH_CONFIG_ID",
 ] as const;
 
 export async function effectiveRuntimeEnvironment(): Promise<RuntimeEnvironment> {
@@ -70,7 +69,7 @@ export async function composioConfiguration() {
   const githubAuthConfigId = normalized(env.COMPOSIO_GITHUB_AUTH_CONFIG_ID);
   const fixtureMode = env.COMPOSIO_FIXTURE_MODE === "true" && isLocalDevelopmentEnvironment(env);
   const baseUrl = normalized(env.COMPOSIO_API_BASE_URL) || "https://backend.composio.dev/api/v3.1";
-  if (!apiKey || !githubAuthConfigId) throw new Error("Composio GitHub connection is not configured");
+  if (!apiKey) throw new Error("Composio GitHub connection is not configured");
   const parsed = new URL(baseUrl);
   const official = parsed.protocol === "https:" && parsed.hostname === "backend.composio.dev";
   const localFixture = fixtureMode && parsed.protocol === "http:" && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");

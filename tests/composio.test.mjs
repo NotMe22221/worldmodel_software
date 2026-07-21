@@ -173,6 +173,47 @@ test("Composio client creates a hosted link, verifies the account, filters repos
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test("Composio creates and uses managed GitHub auth when no config ID override exists", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalAuthConfigId = process.env.COMPOSIO_GITHUB_AUTH_CONFIG_ID;
+  const runtimeEnv = globalThis.__worldmodelLocalEnv;
+  const originalRuntimeAuthConfigId = runtimeEnv?.COMPOSIO_GITHUB_AUTH_CONFIG_ID;
+  const calls = [];
+  delete process.env.COMPOSIO_GITHUB_AUTH_CONFIG_ID;
+  if (runtimeEnv) delete runtimeEnv.COMPOSIO_GITHUB_AUTH_CONFIG_ID;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    calls.push({ url, method: init.method || "GET", body });
+    if (url.pathname.endsWith("/auth_configs") && !init.method) return Response.json({ items: [] });
+    if (url.pathname.endsWith("/auth_configs") && init.method === "POST") {
+      assert.deepEqual(body, { toolkit: { slug: "github" } });
+      return Response.json({ toolkit: { slug: "github" }, auth_config: { id: "ac_managed_github", is_composio_managed: true } }, { status: 201 });
+    }
+    if (url.pathname.endsWith("/connected_accounts/link")) {
+      assert.equal(body.auth_config_id, "ac_managed_github");
+      return Response.json({ link_token: "lt_managed", redirect_url: "https://connect.composio.dev/link/lt_managed", connected_account_id: "ca_managed" }, { status: 201 });
+    }
+    throw new Error(`Unexpected managed auth request: ${url}`);
+  };
+  try {
+    const { createComposioGithubLink } = await import("../server/composio.ts");
+    const link = await createComposioGithubLink(`wm_${"f".repeat(40)}`, "http://localhost:3100/api/integrations/composio/github/callback");
+    assert.equal(link.authConfigId, "ac_managed_github");
+    assert.equal(link.redirectUrl, "https://connect.composio.dev/link/lt_managed");
+    assert.equal(calls[0].url.searchParams.get("toolkit_slug"), "github");
+    assert.equal(calls[0].url.searchParams.get("is_composio_managed"), "true");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalAuthConfigId === undefined) delete process.env.COMPOSIO_GITHUB_AUTH_CONFIG_ID;
+    else process.env.COMPOSIO_GITHUB_AUTH_CONFIG_ID = originalAuthConfigId;
+    if (runtimeEnv) {
+      if (originalRuntimeAuthConfigId === undefined) delete runtimeEnv.COMPOSIO_GITHUB_AUTH_CONFIG_ID;
+      else runtimeEnv.COMPOSIO_GITHUB_AUTH_CONFIG_ID = originalRuntimeAuthConfigId;
+    }
+  }
+});
+
 test("Composio fresh draft retries reject an existing branch with a different generated tree", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init = {}) => {
@@ -307,13 +348,13 @@ test("Composio readiness reports exact missing variable names without exposing v
     configured: false,
     githubConfigured: false,
     fixture: false,
-    missing: ["COMPOSIO_API_KEY", "COMPOSIO_GITHUB_AUTH_CONFIG_ID"],
+    missing: ["COMPOSIO_API_KEY"],
   });
   assert.deepEqual(composioConfigurationStatusForEnvironment({ VERCEL: "1", COMPOSIO_API_KEY: "secret" }), {
-    configured: false,
-    githubConfigured: false,
+    configured: true,
+    githubConfigured: true,
     fixture: false,
-    missing: ["COMPOSIO_GITHUB_AUTH_CONFIG_ID"],
+    missing: [],
   });
   assert.deepEqual(composioConfigurationStatusForEnvironment({
     VERCEL: "1",

@@ -49,10 +49,10 @@ export async function saveLocalProviderSettings(email: string, input: ProviderIn
     OPENAI_API_KEY: input.openaiApiKey?.trim() || current.OPENAI_API_KEY || "",
     OPENAI_AGENT_MODEL: input.openaiModel?.trim() || current.OPENAI_AGENT_MODEL || "gpt-5.6",
   };
-  const hasComposio = Boolean(values.COMPOSIO_API_KEY && values.COMPOSIO_GITHUB_AUTH_CONFIG_ID);
+  const hasComposio = Boolean(values.COMPOSIO_API_KEY);
   const githubValues = [values.GITHUB_APP_SLUG, values.GITHUB_APP_ID, values.GITHUB_CLIENT_ID, values.GITHUB_CLIENT_SECRET, values.GITHUB_APP_PRIVATE_KEY];
   const hasGithubApp = githubValues.every(Boolean);
-  if (!hasComposio && !hasGithubApp) throw new Error("Add a Composio project API key and GitHub auth config ID");
+  if (!hasComposio && !hasGithubApp) throw new Error("Add a Composio project API key");
   if (values.COMPOSIO_API_KEY && !/^ak_[A-Za-z0-9_-]{8,}$/.test(values.COMPOSIO_API_KEY) && values.COMPOSIO_API_KEY !== "fixture") throw new Error("Composio API key format is invalid");
   if (values.COMPOSIO_GITHUB_AUTH_CONFIG_ID && !/^[A-Za-z0-9_-]{3,160}$/.test(values.COMPOSIO_GITHUB_AUTH_CONFIG_ID)) throw new Error("Composio GitHub auth config ID is invalid");
   if (githubValues.some(Boolean) && !hasGithubApp) throw new Error("Complete every custom GitHub App field or leave all of them empty");

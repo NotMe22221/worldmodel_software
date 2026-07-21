@@ -42,7 +42,7 @@ closed when those variables are unavailable. Set `WORLDMODEL_PUBLIC_ORIGIN`
 only to select a different canonical `https://` domain. Then add the provider
 secrets needed for the features you intend to enable:
 
-- Composio: `COMPOSIO_API_KEY`, `COMPOSIO_GITHUB_AUTH_CONFIG_ID`
+- Composio: `COMPOSIO_API_KEY` (`COMPOSIO_GITHUB_AUTH_CONFIG_ID` is an optional override; otherwise WorldModel resolves or creates managed GitHub OAuth automatically)
 - OpenAI: `OPENAI_API_KEY`, optionally `OPENAI_AGENT_MODEL`
 - Stripe: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
   `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_PRO`
