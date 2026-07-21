@@ -1,4 +1,7 @@
 import Link from "next/link";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = { alternates: { canonical: "/" } };
 
 function Mark() {
   return <span className="warm-mark" aria-hidden="true"><i /><i /><i /></span>;
@@ -74,7 +77,7 @@ export default function Home() {
       <article><header><i>4</i><div><b>Make the release decision</b><span>Approve the strongest result with a complete, auditable evidence trail.</span></div></header><div className="mini-scene mini-chart"><svg viewBox="0 0 260 120" aria-hidden="true"><path d="M8 102 C35 96 39 55 61 69 S91 87 111 45 S143 80 164 47 S195 65 211 31 S238 24 252 8" /><line x1="8" y1="102" x2="252" y2="102" /></svg><i>✓</i></div><footer>♢ Release confidence</footer></article>
     </section>
 
-    <section className="warm-integrations" aria-label="Supported engineering tools"><span>BUILT FOR MODERN ENGINEERING TEAMS</span><div><b>◆ GitHub</b><b>▣ TypeScript</b><b>◎ Playwright</b><b>◯ Cloudflare</b><b>✦ OpenAI</b></div></section>
+    <section className="warm-integrations" aria-label="Supported engineering tools"><span>BUILT FOR MODERN ENGINEERING TEAMS</span><div><b>◆ GitHub</b><b>▣ TypeScript</b><b>◎ Playwright</b><b>▲ Vercel</b><b>✦ OpenAI</b></div></section>
 
     <section className="warm-product-story" id="workflow">
       <div className="story-copy"><span className="warm-kicker">ONE CONTROL PLANE</span><h2>From repository to a verified reliability decision.</h2><p>Connect an exact commit, review the inferred system model, approve a bounded environment, and run up to 20 scenarios from one AI-assisted campaign.</p><ol><li><i>01</i><span><b>Observe the real system</b><small>Evidence-linked graph, routes, tests, services, and dependencies.</small></span></li><li><i>02</i><span><b>Run many bounded simulations</b><small>Traffic, dependency, database, and combined failure scenarios.</small></span></li><li><i>03</i><span><b>Compare three repairs</b><small>Identical replay, hard gates, deterministic scoring, human approval.</small></span></li></ol><Link className="warm-text-link" href="/signup">Create your workspace <Arrow /></Link></div>

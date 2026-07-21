@@ -10,7 +10,7 @@ export async function GET() {
     if (!database) throw new Error("Database binding is unavailable");
     const probe = await database.prepare("SELECT 1 AS ready").first<{ ready: number }>();
     if (Number(probe?.ready) !== 1) throw new Error("Database probe returned an invalid response");
-    const platform = process.env.VERCEL === "1" ? "vercel" : process.env.WORLDMODEL_LOCAL_RUNTIME === "true" || process.env.NODE_ENV === "development" ? "local" : "cloudflare";
+    const platform = process.env.VERCEL === "1" ? "vercel" : process.env.WORLDMODEL_LOCAL_RUNTIME === "true" || process.env.NODE_ENV === "development" ? "local" : "node";
     return Response.json({ status: "ok", storage: "durable", platform }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     console.error("Deployment health check failed", error instanceof Error ? error.message : error);

@@ -17,7 +17,7 @@ export async function GET(request: Request) {
   const { email } = user;
   try {
     const snapshot = await getSaasSnapshot(email);
-    const [configuration, operatorAccess] = await Promise.all([businessConfiguration(), hasOperatorAccess(email)]);
+    const [configuration, operatorAccess] = await Promise.all([businessConfiguration(), hasOperatorAccess(email, user.id)]);
     return Response.json({
       ...snapshot,
       configuration,

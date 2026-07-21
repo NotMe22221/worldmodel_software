@@ -19,9 +19,17 @@ will provision these **server-only** variables for Production and Preview:
 Never prefix either variable with `NEXT_PUBLIC_`. Data-backed requests fail
 closed with `VERCEL_STORAGE_NOT_CONFIGURED` if either value is missing; the
 application never falls back to temporary local storage.
-The Vercel build warns when durable storage is incomplete but continues so the
-public pages and explicit configuration state can be deployed. `/api/health`
-continues to return HTTP 503 until durable storage is configured and reachable.
+Production builds fail with an explicit preflight error when durable storage is
+incomplete. Preview builds warn, and `/api/health` returns HTTP 503 until durable
+storage is configured and reachable.
+
+Apply the registered migrations in numeric order through
+`drizzle/0019_isolate_github_workspaces.sql` before enabling production
+traffic. Migrations `0017` through `0019` are additive: `0018` installs the
+Composio connection tables, and `0019` copies legacy GitHub App records into
+tenant-scoped tables without dropping the legacy rows. Migration `0017` is
+intentionally idempotent because earlier deployments applied that file manually
+before it was added to the Drizzle journal.
 
 ## Application configuration
 
@@ -33,8 +41,8 @@ Then add the provider secrets needed for the features you intend to enable:
 - OpenAI: `OPENAI_API_KEY`, optionally `OPENAI_AGENT_MODEL`
 - Stripe: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
   `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_PRO`
-- Runner callbacks: `RUNNER_EVIDENCE_SECRET`, `RUNNER_TOKEN_SECRET`
-- Internal access: `WORLDMODEL_OPERATOR_EMAILS`
+- GitHub Actions evidence exchange: `RUNNER_TOKEN_SECRET`
+- Internal access: `WORLDMODEL_OPERATOR_EMAILS` and matching immutable account IDs in `WORLDMODEL_OPERATOR_USER_IDS` (both are required in production)
 
 Use the deployed origin for OAuth callbacks and `/api/billing/webhook` for the
 Stripe webhook. Store secrets separately in Preview and Production.
@@ -44,8 +52,9 @@ Stripe webhook. Store secrets separately in Preview and Production.
 The web application, authentication, workspace data, integrations, billing,
 reports, and libSQL-backed evidence work on Vercel. Long-running campaign
 execution remains unavailable until a compatible external execution control
-plane is connected; the product readiness screen reports this as an explicit
-configuration gap rather than fabricating a successful run.
+plane and GitHub Actions runner adapter are connected. No second hosting runtime
+is required; the product readiness screen reports the missing adapters as an
+explicit configuration gap rather than fabricating a successful run.
 
 ## Verification
 

@@ -10,12 +10,22 @@ import {
   getComposioGithubTree,
   listComposioGithubRepositories,
   revokeComposioConnection,
+  type ComposioGithubRepository,
 } from "../server/composio.ts";
 import { buildRepositoryGraph } from "../worldmodel/repository-graph.mjs";
+import {
+  claimComposioConnectionAttempt,
+  cleanupComposioConnectionAttempts,
+  finalizeComposioConnectionAttempt,
+  getComposioConnectionAttempt,
+  newestRecoverableComposioConnectionAttempt,
+  releaseComposioConnectionAttempt,
+  type PendingConnectionAttempt,
+} from "../server/composio-attempts.ts";
 
 async function getD1() {
   const env = await getRuntimeEnv();
-  if (!env.DB) throw new Error("D1 binding DB is unavailable");
+  if (!env.DB) throw new Error("Durable database is unavailable");
   return env.DB;
 }
 
@@ -28,7 +38,19 @@ async function composioUserId(workspaceId: string, email: string) {
   return `wm_${(await sha256(`worldmodel:${workspaceId}:${email.toLowerCase()}`)).slice(0, 40)}`;
 }
 
-export async function beginComposioGithubConnection(email: string, callbackUrl: string) {
+type LifecycleLogDetails = {
+  workspaceId?: string;
+  outcome?: "started" | "claimed" | "connected" | "released" | "not_found";
+  reason?: "provider_failure" | "state_changed" | "no_recoverable_attempt";
+};
+
+function lifecycleLog(level: "info" | "warn", event: string, correlationId: string, details: LifecycleLogDetails = {}) {
+  const payload = JSON.stringify({ component: "composio_github", event, correlationId, ...details });
+  if (level === "warn") console.warn(payload);
+  else console.info(payload);
+}
+
+export async function beginComposioGithubConnection(email: string, callbackUrl: string, correlationId = crypto.randomUUID()) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin"]);
   const config = await composioConfiguration();
@@ -43,9 +65,10 @@ export async function beginComposioGithubConnection(email: string, callbackUrl: 
   const providerExpiry = Date.parse(link.expiresAt);
   const expiresAt = new Date(Number.isFinite(providerExpiry) ? Math.min(hardExpiry, providerExpiry) : hardExpiry).toISOString();
   const db = await getD1();
-  await db.prepare("DELETE FROM composio_connection_attempts WHERE used_at IS NOT NULL OR expires_at < ?").bind(new Date().toISOString()).run();
+  await cleanupComposioConnectionAttempts(db, new Date().toISOString());
   await db.prepare("INSERT INTO composio_connection_attempts (state_hash, workspace_id, created_by, composio_user_id, connected_account_id, auth_config_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(stateHash, workspaceId, email.toLowerCase(), userId, link.connectedAccountId, config.githubAuthConfigId, expiresAt).run();
   await recordAudit({ workspaceId, actorEmail: email, action: "composio.github.started", targetType: "integration", targetId: link.connectedAccountId, summary: "Started a hosted GitHub connection through Composio", metadata: { authConfigId: config.githubAuthConfigId } });
+  lifecycleLog("info", "connection_start", correlationId, { workspaceId, outcome: "started" });
   return { redirectUrl: link.redirectUrl, connectedAccountId: link.connectedAccountId, expiresAt };
 }
 
@@ -59,20 +82,7 @@ type ConnectionRecord = {
   status: string;
 };
 
-type PendingConnection = {
-  state_hash: string;
-  workspace_id: string;
-  created_by: string;
-  composio_user_id: string;
-  connected_account_id: string | null;
-  auth_config_id: string;
-  expires_at: string;
-  used_at: string | null;
-};
-
-async function syncConnection(connection: ConnectionRecord) {
-  if (connection.status !== "active") throw new Error("Composio GitHub connection is not active");
-  const repositories = await listComposioGithubRepositories(connection.connected_account_id, connection.composio_user_id);
+async function persistRepositories(connection: ConnectionRecord, repositories: ComposioGithubRepository[]) {
   const db = await getD1();
   if (repositories.length) {
     await db.batch(repositories.map((repository) => {
@@ -84,47 +94,81 @@ async function syncConnection(connection: ConnectionRecord) {
   return repositories;
 }
 
-async function persistVerifiedConnection(email: string, pending: PendingConnection) {
+async function syncConnection(connection: ConnectionRecord) {
+  if (connection.status !== "active") throw new Error("Composio GitHub connection is not active");
+  const repositories = await listComposioGithubRepositories(connection.connected_account_id, connection.composio_user_id);
+  return persistRepositories(connection, repositories);
+}
+
+async function persistVerifiedConnection(email: string, pending: PendingConnectionAttempt) {
   if (!pending.connected_account_id) throw new Error("Composio connection account is missing");
   const account = await getComposioConnectedAccount(pending.connected_account_id);
   if (account.id !== pending.connected_account_id || account.userId !== pending.composio_user_id || account.authConfigId !== pending.auth_config_id || account.toolkitSlug.toLowerCase() !== "github" || !["ACTIVE", "CONNECTED"].includes(account.status)) throw new Error("Composio did not return the authorized GitHub connection");
-  const identity = await getComposioGithubIdentity(account.id, account.userId).catch(() => ({ login: "GitHub account" }));
+  const [identity, repositories] = await Promise.all([
+    getComposioGithubIdentity(account.id, account.userId).catch(() => ({ login: "GitHub account" })),
+    listComposioGithubRepositories(account.id, account.userId),
+  ]);
   const connectionId = `cmp_${(await sha256(`${pending.workspace_id}:${account.id}`)).slice(0, 24)}`;
   const db = await getD1();
   await db.prepare("INSERT INTO composio_connections (id, workspace_id, connected_account_id, composio_user_id, auth_config_id, toolkit_slug, provider_login, status, connected_by) VALUES (?, ?, ?, ?, ?, 'github', ?, 'active', ?) ON CONFLICT(workspace_id, connected_account_id) DO UPDATE SET composio_user_id = excluded.composio_user_id, auth_config_id = excluded.auth_config_id, provider_login = excluded.provider_login, status = 'active', connected_by = excluded.connected_by, updated_at = CURRENT_TIMESTAMP").bind(connectionId, pending.workspace_id, account.id, account.userId, account.authConfigId, identity.login, email.toLowerCase()).run();
   const connection = await db.prepare("SELECT id, workspace_id, connected_account_id, composio_user_id, auth_config_id, provider_login, status FROM composio_connections WHERE workspace_id = ? AND connected_account_id = ?").bind(pending.workspace_id, account.id).first<ConnectionRecord>();
   if (!connection) throw new Error("Composio GitHub connection could not be persisted");
-  const repositories = await syncConnection(connection);
+  await persistRepositories(connection, repositories);
   await recordAudit({ workspaceId: pending.workspace_id, actorEmail: email, action: "composio.github.connected", targetType: "composio_connection", targetId: connection.id, summary: `Connected ${identity.login} through Composio`, metadata: { repositoryCount: repositories.length, connectedAccountId: account.id } });
   return { connectionId: connection.id, account: identity.login, repositoryCount: repositories.length };
 }
 
-export async function completeComposioGithubConnection(email: string | null, state: string) {
+async function claimAndPersistConnection(email: string, pending: PendingConnectionAttempt, correlationId: string) {
+  const db = await getD1();
+  const now = new Date().toISOString();
+  const claim = await claimComposioConnectionAttempt(db, pending.state_hash, now, correlationId);
+  if (!claim) throw new Error("Composio connection state is invalid, expired, or already in use");
+  lifecycleLog("info", "connection_attempt", correlationId, { workspaceId: pending.workspace_id, outcome: "claimed" });
+  try {
+    const connected = await persistVerifiedConnection(email, pending);
+    const finalized = await finalizeComposioConnectionAttempt(db, pending.state_hash, claim);
+    if (!finalized) {
+      lifecycleLog("warn", "connection_attempt", correlationId, { workspaceId: pending.workspace_id, reason: "state_changed" });
+      throw new Error("Composio connection state changed before it could be finalized");
+    }
+    lifecycleLog("info", "connection_complete", correlationId, { workspaceId: pending.workspace_id, outcome: "connected" });
+    return connected;
+  } catch (error) {
+    const released = await releaseComposioConnectionAttempt(db, pending.state_hash, claim, new Date().toISOString());
+    if (released) lifecycleLog("warn", "connection_attempt", correlationId, { workspaceId: pending.workspace_id, outcome: "released", reason: "provider_failure" });
+    throw error;
+  }
+}
+
+export async function completeComposioGithubConnection(email: string | null, state: string, correlationId = crypto.randomUUID()) {
   await ensureSaasSchema();
   const db = await getD1();
   const stateHash = await sha256(state);
-  const pending = await db.prepare("SELECT state_hash, workspace_id, created_by, composio_user_id, connected_account_id, auth_config_id, expires_at, used_at FROM composio_connection_attempts WHERE state_hash = ?").bind(stateHash).first<PendingConnection>();
+  const pending = await getComposioConnectionAttempt(db, stateHash);
   if (!pending || pending.used_at || (email && pending.created_by !== email.toLowerCase()) || Date.parse(pending.expires_at) <= Date.now() || !pending.connected_account_id) throw new Error("Composio connection state is invalid or expired");
-  const consumed = await db.prepare("UPDATE composio_connection_attempts SET used_at = CURRENT_TIMESTAMP WHERE state_hash = ? AND used_at IS NULL").bind(stateHash).run();
-  if (!consumed.meta.changes) throw new Error("Composio connection state was already used");
-  return persistVerifiedConnection(email || pending.created_by, pending);
+  return claimAndPersistConnection(email || pending.created_by, pending, correlationId);
 }
 
-export async function recoverComposioGithubConnection(email: string) {
+export async function recoverComposioGithubConnection(email: string, correlationId = crypto.randomUUID()) {
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin"]);
   const config = await composioConfiguration();
   const workspaceId = String(snapshot.workspace.id);
   const expectedUserId = await composioUserId(workspaceId, email);
   const db = await getD1();
-  const pending = (await db.prepare("SELECT state_hash, workspace_id, created_by, composio_user_id, connected_account_id, auth_config_id, expires_at, used_at FROM composio_connection_attempts WHERE workspace_id=? AND lower(created_by)=lower(?) AND composio_user_id=? AND auth_config_id=? AND used_at IS NULL AND connected_account_id IS NOT NULL ORDER BY created_at DESC LIMIT 5").bind(workspaceId, email, expectedUserId, config.githubAuthConfigId).all<PendingConnection>()).results;
-  for (const candidate of pending) {
-    try {
-      const recovered = await persistVerifiedConnection(email, candidate);
-      await db.prepare("UPDATE composio_connection_attempts SET used_at=CURRENT_TIMESTAMP WHERE state_hash=? AND used_at IS NULL").bind(candidate.state_hash).run();
-      await recordAudit({ workspaceId, actorEmail: email, action: "composio.github.recovered", targetType: "composio_connection", targetId: recovered.connectionId, summary: "Recovered a completed GitHub OAuth callback after the browser session changed hosts" });
-      return recovered;
-    } catch {}
+  const now = new Date().toISOString();
+  await cleanupComposioConnectionAttempts(db, now);
+  const candidate = await newestRecoverableComposioConnectionAttempt(db, { workspaceId, email, composioUserId: expectedUserId, authConfigId: config.githubAuthConfigId, now });
+  if (!candidate) {
+    lifecycleLog("info", "connection_recovery", correlationId, { workspaceId, outcome: "not_found", reason: "no_recoverable_attempt" });
+    return null;
+  }
+  try {
+    const recovered = await claimAndPersistConnection(email, candidate, correlationId);
+    await recordAudit({ workspaceId, actorEmail: email, action: "composio.github.recovered", targetType: "composio_connection", targetId: recovered.connectionId, summary: "Recovered a completed GitHub OAuth callback after the browser session changed hosts" });
+    return recovered;
+  } catch {
+    lifecycleLog("info", "connection_recovery", correlationId, { workspaceId, outcome: "not_found", reason: "provider_failure" });
   }
   return null;
 }

@@ -6,10 +6,11 @@ import { repositoryTree } from "../server/github";
 import { buildRepositoryGraph } from "../worldmodel/repository-graph.mjs";
 import { createModelVersion } from "./product";
 import { getRuntimeEnv } from "@/server/runtime-env";
+import { githubConnectionStatements, requireImportableGithubRepository, selectGithubRepository } from "./github-app.ts";
 
 async function getD1() {
   const env = await getRuntimeEnv();
-  if (!env.DB) throw new Error("D1 binding DB is unavailable");
+  if (!env.DB) throw new Error("Durable database is unavailable");
   return env.DB;
 }
 
@@ -43,8 +44,7 @@ export async function completeGithubConnection(email: string, state: string, ins
   if (String(installation.id) !== pending.installation_id) throw new Error("GitHub installation did not match the authorized connection");
   const db = await getD1();
   const statements = [
-    db.prepare("INSERT INTO github_installations (installation_id, workspace_id, account_login, account_type, repository_selection, permissions_json, status, connected_by) VALUES (?, ?, ?, ?, ?, ?, 'active', ?) ON CONFLICT(installation_id) DO UPDATE SET workspace_id = excluded.workspace_id, account_login = excluded.account_login, account_type = excluded.account_type, repository_selection = excluded.repository_selection, permissions_json = excluded.permissions_json, status = 'active', connected_by = excluded.connected_by, updated_at = CURRENT_TIMESTAMP").bind(String(installation.id), pending.workspace_id, installation.account.login, installation.account.type, installation.repository_selection, JSON.stringify(installation.permissions), email.toLowerCase()),
-    ...repositories.map((repository) => db.prepare("INSERT INTO github_repositories (repository_id, installation_id, workspace_id, full_name, default_branch, is_private, synced_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(repository_id) DO UPDATE SET installation_id = excluded.installation_id, workspace_id = excluded.workspace_id, full_name = excluded.full_name, default_branch = excluded.default_branch, is_private = excluded.is_private, synced_at = CURRENT_TIMESTAMP").bind(String(repository.id), String(installation.id), pending.workspace_id, repository.full_name, repository.default_branch, repository.private ? 1 : 0)),
+    ...githubConnectionStatements(db, pending.workspace_id, email, installation, repositories),
     db.prepare("UPDATE integration_states SET used_at = CURRENT_TIMESTAMP WHERE token = ? AND used_at IS NULL").bind(state),
   ];
   await db.batch(statements);
@@ -56,8 +56,7 @@ export async function importGithubRepository(email: string, repositoryId: string
   const snapshot = await getSaasSnapshot(email);
   requireRole(snapshot, ["owner", "admin", "member"]);
   const db = await getD1();
-  const repository = await db.prepare("SELECT repository_id, installation_id, full_name, default_branch FROM github_repositories WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).first<{ repository_id: string; installation_id: string; full_name: string; default_branch: string }>();
-  if (!repository) throw new Error("GitHub repository was not found in this workspace");
+  const repository = await requireImportableGithubRepository(db, String(snapshot.workspace.id), repositoryId);
   const tree = await repositoryTree(repository.installation_id, repository.full_name, repository.default_branch);
   const graph = buildRepositoryGraph(tree.entries, { repository: repository.full_name, branch: repository.default_branch, commitSha: tree.commitSha, truncated: tree.truncated });
   const graphJson = JSON.stringify(graph);
@@ -65,7 +64,7 @@ export async function importGithubRepository(email: string, repositoryId: string
   const existing = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? AND lower(repository) = lower(?) LIMIT 1").bind(snapshot.workspace.id, repository.full_name).first();
   if (existing) {
     await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1, graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, existing.id, snapshot.workspace.id).run();
-    await db.prepare("UPDATE github_repositories SET selected = 1 WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).run();
+    await selectGithubRepository(db, String(snapshot.workspace.id), repositoryId);
     await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "repository.mapped", targetType: "project", targetId: String(existing.id), summary: `Mapped ${graph.nodes.length} components from ${repository.full_name}`, metadata: { scannedPathCount: graph.scannedPathCount, truncated: graph.truncated } });
     await createModelVersion(email, String(existing.id), { commitSha: tree.commitSha, graph, confidence: graph.truncated ? 70 : 85 });
     return db.prepare("SELECT * FROM projects WHERE id = ?").bind(existing.id).first();
@@ -73,7 +72,7 @@ export async function importGithubRepository(email: string, repositoryId: string
   const name = repository.full_name.split("/").pop()?.replaceAll("-", " ") || repository.full_name;
   const project = await createProject(email, { name: name.replace(/\b\w/g, (letter) => letter.toUpperCase()), repository: repository.full_name, branch: repository.default_branch, sourceKind: "github", repositoryVerified: true });
   await db.prepare("UPDATE projects SET graph_json = ?, scan_summary = ?, scanned_at = CURRENT_TIMESTAMP, service_count = ?, status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?").bind(graphJson, scanSummary, graph.nodes.length, project?.id, snapshot.workspace.id).run();
-  await db.prepare("UPDATE github_repositories SET selected = 1 WHERE repository_id = ? AND workspace_id = ?").bind(repositoryId, snapshot.workspace.id).run();
+  await selectGithubRepository(db, String(snapshot.workspace.id), repositoryId);
   await recordAudit({ workspaceId: String(snapshot.workspace.id), actorEmail: email, action: "repository.imported", targetType: "github_repository", targetId: repositoryId, summary: `Imported and mapped ${repository.full_name} from GitHub`, metadata: { projectId: String(project?.id || ""), componentCount: graph.nodes.length, scannedPathCount: graph.scannedPathCount, truncated: graph.truncated } });
   await createModelVersion(email, String(project?.id), { commitSha: tree.commitSha, graph, confidence: graph.truncated ? 70 : 85 });
   return db.prepare("SELECT * FROM projects WHERE id = ?").bind(project?.id).first();

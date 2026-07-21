@@ -1,6 +1,25 @@
 import { githubConfiguration } from "./runtime-config.ts";
 
 const API_VERSION = "2026-03-10";
+const GITHUB_REQUEST_TIMEOUT_MS = 20_000;
+
+function isAbortFailure(error: unknown) {
+  const name = error && typeof error === "object" && "name" in error ? error.name : "";
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+async function withGithubDeadline<T>(callerSignal: AbortSignal | null | undefined, operation: (signal: AbortSignal) => Promise<T>) {
+  const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
+  const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
+  try {
+    return await operation(signal);
+  } catch (error) {
+    if (timeoutSignal.aborted && (error === timeoutSignal.reason || isAbortFailure(error))) {
+      throw new Error("GitHub request timed out");
+    }
+    throw error;
+  }
+}
 
 function base64Url(input: Uint8Array | string) {
   const binary =
@@ -48,44 +67,50 @@ async function githubFetch<T>(
   token: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${token}`,
-      "x-github-api-version": API_VERSION,
-      "user-agent": "WorldModel-for-Software",
-      ...init?.headers,
-    },
+  return withGithubDeadline(init?.signal, async (signal) => {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        "x-github-api-version": API_VERSION,
+        "user-agent": "WorldModel-for-Software",
+        ...init?.headers,
+      },
+      signal,
+    });
+    if (!response.ok)
+      throw new Error(`GitHub request failed with status ${response.status}`);
+    return response.json() as Promise<T>;
   });
-  if (!response.ok)
-    throw new Error(`GitHub request failed with status ${response.status}`);
-  return response.json() as Promise<T>;
 }
 
 export async function exchangeGithubCode(code: string, redirectUri: string) {
   const config = await githubConfiguration();
-  const response = await fetch("https://github.com/login/oauth/access_token", {
-    method: "POST",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      code,
-      redirect_uri: redirectUri,
-    }),
+  return withGithubDeadline(undefined, async (signal) => {
+    const response = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        code,
+        redirect_uri: redirectUri,
+      }),
+      signal,
+    });
+    const payload = (await response.json()) as {
+      access_token?: string;
+      error?: string;
+    };
+    if (!response.ok || !payload.access_token)
+      throw new Error(
+        payload.error
+          ? `GitHub authorization failed: ${payload.error}`
+          : "GitHub authorization failed",
+      );
+    return payload.access_token;
   });
-  const payload = (await response.json()) as {
-    access_token?: string;
-    error?: string;
-  };
-  if (!response.ok || !payload.access_token)
-    throw new Error(
-      payload.error
-        ? `GitHub authorization failed: ${payload.error}`
-        : "GitHub authorization failed",
-    );
-  return payload.access_token;
 }
 
 export type GithubInstallation = {
@@ -159,16 +184,28 @@ export async function repositoryTreeWithToken(
   if (!match) throw new Error("GitHub repository name is invalid");
   if (!/^[A-Za-z0-9._/-]{1,120}$/.test(branch))
     throw new Error("GitHub branch name is invalid");
+  const ref = await githubFetch<{ object: { sha: string } }>(
+    `https://api.github.com/repos/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}/git/ref/heads/${encodeURIComponent(branch)}`,
+    token,
+  );
+  if (!/^[a-f0-9]{40}$/i.test(ref.object?.sha || ""))
+    throw new Error("GitHub returned an invalid branch commit");
+  const commit = await githubFetch<{ sha: string; tree: { sha: string } }>(
+    `https://api.github.com/repos/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}/git/commits/${ref.object.sha}`,
+    token,
+  );
+  if (!/^[a-f0-9]{40}$/i.test(commit.sha || "") || commit.sha.toLowerCase() !== ref.object.sha.toLowerCase() || !/^[a-f0-9]{40}$/i.test(commit.tree?.sha || ""))
+    throw new Error("GitHub returned an invalid commit tree");
   const result = await githubFetch<{
     sha: string;
     truncated: boolean;
     tree: Array<{ path: string; type: string; size?: number }>;
   }>(
-    `https://api.github.com/repos/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+    `https://api.github.com/repos/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}/git/trees/${commit.tree.sha}?recursive=1`,
     token,
   );
   return {
-    commitSha: result.sha,
+    commitSha: ref.object.sha,
     truncated: Boolean(result.truncated),
     entries: result.tree
       .filter((entry) => entry.type === "blob" || entry.type === "tree")
@@ -189,22 +226,31 @@ async function githubRequest<T>(
   init?: RequestInit,
   allowed: number[] = [200, 201],
 ) {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      "x-github-api-version": API_VERSION,
-      "user-agent": "WorldModel-for-Software",
-      ...init?.headers,
-    },
+  return withGithubDeadline(init?.signal, async (signal) => {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-github-api-version": API_VERSION,
+        "user-agent": "WorldModel-for-Software",
+        ...init?.headers,
+      },
+      signal,
+    });
+    let payload: unknown = null;
+    if (response.status !== 204) {
+      try {
+        payload = await response.json();
+      } catch (error) {
+        if (isAbortFailure(error)) throw error;
+      }
+    }
+    if (!allowed.includes(response.status))
+      throw new Error(`GitHub request failed with status ${response.status}`);
+    return { status: response.status, payload: payload as T };
   });
-  const payload =
-    response.status === 204 ? null : await response.json().catch(() => null);
-  if (!allowed.includes(response.status))
-    throw new Error(`GitHub request failed with status ${response.status}`);
-  return { status: response.status, payload: payload as T };
 }
 
 type DraftEvidenceInput = {

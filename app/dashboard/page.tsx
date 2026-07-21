@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties, FormEvent } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import "./dashboard.css";
 import "./observed.css";
 
@@ -280,6 +280,43 @@ const navItems: Array<{ id: Tab; label: string; icon: string }> = [
   { id: "support", label: "Support", icon: "?" },
   { id: "settings", label: "Settings", icon: "⚙" },
 ];
+
+const DASHBOARD_LOCATION_EVENT = "worldmodel:dashboard-location";
+
+function subscribeToDashboardLocation(onChange: () => void) {
+  window.addEventListener("popstate", onChange);
+  window.addEventListener(DASHBOARD_LOCATION_EVENT, onChange);
+  return () => {
+    window.removeEventListener("popstate", onChange);
+    window.removeEventListener(DASHBOARD_LOCATION_EVENT, onChange);
+  };
+}
+
+function clientDashboardLocation() {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function serverDashboardLocation() {
+  return "/dashboard";
+}
+
+function dashboardLocationParams(snapshot: string) {
+  return new URL(snapshot, "https://worldmodel.invalid").searchParams;
+}
+
+function notifyDashboardLocationChanged() {
+  window.dispatchEvent(new Event(DASHBOARD_LOCATION_EVENT));
+}
+
+function clearComposioCallbackLocation() {
+  const nextUrl = new URL(window.location.href);
+  if (!nextUrl.searchParams.has("composio") && !nextUrl.searchParams.has("correlation")) return;
+  nextUrl.searchParams.delete("composio");
+  nextUrl.searchParams.delete("correlation");
+  window.history.replaceState(window.history.state, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+  notifyDashboardLocationChanged();
+}
+
 function Logo() {
   return (
     <span className="saas-logo" aria-hidden="true">
@@ -292,6 +329,8 @@ function Logo() {
 function statusLabel(status: string) {
   return status === "verified"
     ? "Verified"
+    : status === "modeled"
+      ? "Modeled"
     : status === "completed"
       ? "Needs repair"
       : status === "scanning"
@@ -299,6 +338,12 @@ function statusLabel(status: string) {
         : status === "unverified"
           ? "Unverified"
         : "Ready";
+}
+function hasVerificationReport(run: Run, workspaceMode: Workspace["workspace_mode"]) {
+  if (run.status !== "verified") return false;
+  return workspaceMode === "sample"
+    ? run.evidence_kind === "sample_fixture"
+    : run.evidence_kind === "observed";
 }
 function mappedNodes(project: Project) {
   try {
@@ -319,8 +364,12 @@ function dateLabel(value: string) {
     : value;
   const date = new Date(normalized);
   return Number.isNaN(date.getTime())
-    ? "Just now"
+    ? "Unknown date"
     : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function signedDelta(value: number) {
+  return value > 0 ? `+${value}` : String(value);
 }
 
 function dashboardDateLabel(date = new Date()) {
@@ -365,30 +414,104 @@ async function readJson<T>(response: Response) {
 }
 
 export default function Dashboard() {
-  const [tab, setTab] = useState<Tab>(() => {
-    if (typeof window === "undefined") return "overview";
-    const requested = new URLSearchParams(window.location.search).get("tab") as Tab | null;
-    return requested && navItems.some((item) => item.id === requested) ? requested : "overview";
-  });
+  const locationSnapshot = useSyncExternalStore(
+    subscribeToDashboardLocation,
+    clientDashboardLocation,
+    serverDashboardLocation,
+  );
+  const locationParams = dashboardLocationParams(locationSnapshot);
+  const requestedTab = locationParams.get("tab") as Tab | null;
+  const tab = requestedTab && navItems.some((item) => item.id === requestedTab)
+    ? requestedTab
+    : "overview";
+  const composioResult = locationParams.get("composio");
+  const correlation = locationParams.get("correlation");
+  const supportReference = correlation ? ` Support reference: ${correlation}.` : "";
+  const callbackError = composioResult === "error"
+    ? `Composio could not verify the GitHub connection. Start a new connection and try again.${supportReference}`
+    : composioResult === "start_error"
+      ? `GitHub connection could not start. Your existing workspace is safe; try again or contact support.${supportReference}`
+      : composioResult === "invalid_state"
+        ? `The GitHub connection link was invalid or expired. Start again from Integrations.${supportReference}`
+        : "";
+  const callbackNotice = composioResult === "connected"
+    ? "GitHub connected through Composio. Repositories are ready to import."
+    : "";
   const [data, setData] = useState<Snapshot | null>(null);
-  const [error, setError] = useState(() => {
-    if (typeof window === "undefined") return "";
-    const result = new URLSearchParams(window.location.search).get("composio");
-    if (result === "error") return "Composio could not verify the GitHub connection. Start a new connection and try again.";
-    if (result === "start_error") return "GitHub connection could not start. Your existing workspace is safe; try again or contact support with the correlation ID in the address bar.";
-    if (result === "invalid_state") return "The GitHub connection link was invalid or expired. Start again from Integrations.";
-    return "";
-  });
+  const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [notice, setNotice] = useState(() => {
-    if (typeof window === "undefined") return "";
-    return new URLSearchParams(window.location.search).get("composio") === "connected" ? "GitHub connected through Composio. Repositories are ready to import." : "";
-  });
+  const [notice, setNotice] = useState("");
   const [newApiToken, setNewApiToken] = useState("");
   const [newInviteLink, setNewInviteLink] = useState("");
+  const [repositorySearch, setRepositorySearch] = useState({ workspaceId: "", query: "" });
+  const inviteSecretRef = useRef<HTMLDivElement>(null);
+  const dashboardReady = Boolean(data);
+  const visibleError = error || callbackError;
+  const visibleNotice = notice || callbackNotice;
+  const setTab = useCallback((nextTab: Tab) => {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("tab", nextTab);
+    nextUrl.searchParams.delete("composio");
+    nextUrl.searchParams.delete("correlation");
+    const nextPath = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+    const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextPath !== currentPath) {
+      window.history.pushState({ ...window.history.state, tab: nextTab }, "", nextPath);
+      notifyDashboardLocationChanged();
+    }
+  }, []);
+  useEffect(() => {
+    if (!composioResult) return;
+    const timer = window.setTimeout(() => {
+      if (callbackError) setError((current) => current || callbackError);
+      if (callbackNotice) setNotice((current) => current || callbackNotice);
+      clearComposioCallbackLocation();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [callbackError, callbackNotice, composioResult]);
+  useEffect(() => {
+    if (!showCreate && !showUpgrade && !showInvite) return;
+    const dialog = document.querySelector<HTMLElement>(".saas-modal-backdrop [role='dialog']");
+    if (!dialog) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const background = Array.from(document.querySelectorAll<HTMLElement>(".saas-sidebar, .saas-topbar, .saas-content > :not(.saas-modal-backdrop)"));
+    const previousOverflow = document.body.style.overflow;
+    background.forEach((element) => { element.inert = true; element.setAttribute("aria-hidden", "true"); });
+    document.body.style.overflow = "hidden";
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'));
+    (focusable()[0] || dialog).focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setShowCreate(false); setShowUpgrade(false); setShowInvite(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const candidates = focusable();
+      if (!candidates.length) { event.preventDefault(); dialog.focus(); return; }
+      const first = candidates[0], last = candidates[candidates.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      background.forEach((element) => { element.inert = false; element.removeAttribute("aria-hidden"); });
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus();
+    };
+  }, [showCreate, showInvite, showUpgrade]);
+  useEffect(() => {
+    if (!dashboardReady || !window.matchMedia("(max-width: 700px)").matches) return;
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    document.querySelector<HTMLElement>(`[data-testid="nav-${tab}"]`)?.scrollIntoView({ block: "nearest", inline: "center", behavior });
+  }, [dashboardReady, tab]);
+  useEffect(() => {
+    if (showInvite && newInviteLink) inviteSecretRef.current?.focus();
+  }, [newInviteLink, showInvite]);
   const load = useCallback(async () => {
     const response = await fetch("/api/saas");
     const payload = await readJson<Snapshot & { error?: string }>(response);
@@ -646,6 +769,19 @@ export default function Dashboard() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to synchronize GitHub"); }
     finally { setCreating(false); }
   }
+  async function disconnectComposio(connectionId: string, providerLogin: string) {
+    if (!confirm(`Disconnect ${providerLogin} from this workspace? Repository twins already imported will remain.`)) return;
+    setCreating(true);
+    setError("");
+    try {
+      await composioAction({ action: "disconnect", connectionId });
+      setNotice(`${providerLogin} was disconnected from this workspace.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to disconnect GitHub");
+    } finally {
+      setCreating(false);
+    }
+  }
   async function checkout(plan: "starter" | "pro") {
     setCreating(true);
     setError("");
@@ -661,7 +797,7 @@ export default function Dashboard() {
       location.href = result.url;
     } catch (reason) {
       setShowUpgrade(false);
-      setNotice(
+      setError(
         reason instanceof Error ? reason.message : "Unable to start checkout",
       );
     } finally {
@@ -678,7 +814,7 @@ export default function Dashboard() {
         throw new Error(result.error || "Unable to open billing management");
       location.href = result.url;
     } catch (reason) {
-      setNotice(
+      setError(
         reason instanceof Error
           ? reason.message
           : "Unable to open billing management",
@@ -874,13 +1010,16 @@ export default function Dashboard() {
       </main>
     );
   const verifiedRuns = data.runs.filter(
-    (run) => run.status === "verified",
+    (run) => run.status === "verified" && run.evidence_kind === "observed",
   ).length;
   const observedRuns = data.runs.filter(
-    (run) => run.status === "verified" && run.evidence_kind === "observed",
+    (run) => run.evidence_kind === "observed",
   ).length;
   const observedScoreRuns = data.runs.filter(
     (run) => run.status === "verified" && run.evidence_kind === "observed",
+  );
+  const reportableRuns = data.runs.filter((run) =>
+    hasVerificationReport(run, data.workspace.workspace_mode),
   );
   const observedAverage = observedScoreRuns.length
     ? Math.round(
@@ -895,7 +1034,7 @@ export default function Dashboard() {
       ? "Connect your first GitHub repository to build a system model and approve an execution environment."
       : data.runs.length === 0
         ? `${data.projects.length} ${data.projects.length === 1 ? "repository is" : "repositories are"} connected. Review the model, environment, and critical journeys before the first run.`
-        : `${data.runs.length} ${data.runs.length === 1 ? "simulation is" : "simulations are"} recorded, including ${observedRuns} with verified observed evidence.`;
+        : `${data.runs.length} ${data.runs.length === 1 ? "simulation is" : "simulations are"} recorded, including ${verifiedRuns} with verified observed evidence.`;
   const usagePercent = Math.min(
     100,
     Math.round(
@@ -907,21 +1046,37 @@ export default function Dashboard() {
   const activeApiKeys = data.apiKeys.filter(
     (key) => key.status === "active",
   ).length;
+  const canAdminWorkspace =
+    data.workspace.membership_role === "owner" ||
+    data.workspace.membership_role === "admin";
+  const canUseWorkspace =
+    canAdminWorkspace || data.workspace.membership_role === "member";
   const canCreateProject =
     data.entitlements.canWrite &&
     data.workspace.workspace_mode === "customer" &&
+    canUseWorkspace &&
     data.projects.length < data.entitlements.limits.projects;
   const occupiedSeats = data.members.length + data.pendingInvitations.length;
   const canInvite =
     data.entitlements.canWrite &&
     occupiedSeats < data.entitlements.limits.seats &&
-    (data.workspace.membership_role === "owner" ||
-      data.workspace.membership_role === "admin");
+    canAdminWorkspace;
   const canManageBilling =
     Boolean(data.subscription?.portal_available) &&
     data.configuration.billing.portalConfigured &&
-    (data.workspace.membership_role === "owner" ||
-      data.workspace.membership_role === "admin");
+    canAdminWorkspace;
+  const activeComposioConnections = data.composioConnections.filter(
+    (connection) => connection.status === "active",
+  );
+  const repositoryQuery = repositorySearch.workspaceId === data.workspace.id
+    ? repositorySearch.query
+    : "";
+  const normalizedRepositoryQuery = repositoryQuery.trim().toLowerCase();
+  const visibleComposioRepositories = normalizedRepositoryQuery
+    ? data.composioRepositories.filter((repository) =>
+        repository.full_name.toLowerCase().includes(normalizedRepositoryQuery),
+      )
+    : data.composioRepositories;
   const lifecycleLabel =
     data.entitlements.lifecycle === "trial"
       ? `PRO TRIAL · ${data.entitlements.trialDaysRemaining} DAYS LEFT`
@@ -965,11 +1120,12 @@ export default function Dashboard() {
               key={item.id}
               data-testid={`nav-${item.id}`}
               className={tab === item.id ? "active" : ""}
+              aria-current={tab === item.id ? "page" : undefined}
               onClick={() => setTab(item.id)}
             >
               <i>{item.icon}</i>
               {item.label}
-              {item.id === "reports" && <em>{verifiedRuns}</em>}
+              {item.id === "reports" && <em>{reportableRuns.length}</em>}
             </button>
           ))}
         </nav>
@@ -1012,7 +1168,7 @@ export default function Dashboard() {
               ?
             </button>
             <button className="icon-button" aria-label="Notifications" onClick={() => setNotice("You have no unread workspace notifications.")}>
-              ♢<i />
+              ♢
             </button>
             <button
               className="new-project"
@@ -1025,11 +1181,33 @@ export default function Dashboard() {
           </div>
         </header>
         <div className="saas-content">
-          {notice && (
-            <button className="saas-notice" onClick={() => setNotice("")}>
-              ✓ {notice}
-              <span>×</span>
-            </button>
+          {visibleNotice && (
+            <div className="saas-notice" role="status">
+              <span>✓ {visibleNotice}</span>
+              <button
+                aria-label="Dismiss notification"
+                onClick={() => {
+                  setNotice("");
+                  clearComposioCallbackLocation();
+                }}
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {visibleError && (
+            <div className="saas-alert" role="alert">
+              <span>{visibleError}</span>
+              <button
+                aria-label="Dismiss error"
+                onClick={() => {
+                  setError("");
+                  clearComposioCallbackLocation();
+                }}
+              >
+                ×
+              </button>
+            </div>
           )}
           {!data.entitlements.canWrite && (
             <div className="entitlement-banner">
@@ -1084,7 +1262,7 @@ export default function Dashboard() {
                 <Kpi
                   label="OBSERVED RUNS"
                   value={String(observedRuns)}
-                  note={`${verifiedRuns - observedRuns} modeled replays`}
+                  note={`${verifiedRuns} signed and verified`}
                 />
                 <Kpi
                   label="AUDIT EVENTS"
@@ -1107,7 +1285,11 @@ export default function Dashboard() {
                     action="View all →"
                     onAction={() => setTab("runs")}
                   />
-                  <RunTable runs={data.runs.slice(0, 3)} />
+                  <RunTable
+                    runs={data.runs.slice(0, 3)}
+                    workspaceMode={data.workspace.workspace_mode}
+                    onOpenHistory={() => setTab("runs")}
+                  />
                 </section>
                 {data.activation ? (
                   <section className="saas-card activation-card">
@@ -1198,7 +1380,7 @@ export default function Dashboard() {
                     <dl>
                       <div>
                         <dt>Resilience</dt>
-                        <dd>{project.resilience_score || "—"}</dd>
+                        <dd>{project.resilience_score ?? "—"}</dd>
                       </div>
                       <div>
                         <dt>Services</dt>
@@ -1277,7 +1459,7 @@ export default function Dashboard() {
                 }}
               />
               <section className="saas-card full-table">
-                <RunTable runs={data.runs} />
+                <RunTable runs={data.runs} workspaceMode={data.workspace.workspace_mode} />
                 {!data.runs.length && (
                   <div className="saas-empty-state">
                     <b>No simulations yet</b>
@@ -1295,8 +1477,7 @@ export default function Dashboard() {
                 description="Decision-ready before-and-after proof for reviewers, pull requests, and release gates."
               />
               <section className="report-grid-saas">
-                {data.runs
-                  .filter((run) => run.status === "verified")
+                {reportableRuns
                   .map((run) => (
                     <article key={run.id}>
                       <span>{data.workspace.workspace_mode === "sample" ? "SAMPLE VERIFIED REPORT" : run.evidence_kind === "observed" ? "OBSERVED VERIFIED REPORT" : "MODELED REPLAY REPORT"}</span>
@@ -1308,7 +1489,7 @@ export default function Dashboard() {
                         <strong>{run.before_score}</strong>
                         <em>→</em>
                         <strong>{run.after_score}</strong>
-                        <b>+{(run.after_score || 0) - run.before_score}</b>
+                        <b>{signedDelta((run.after_score ?? 0) - run.before_score)}</b>
                       </div>
                       <ul>
                         <li>{run.evidence_kind === "modeled" ? "~ Deterministic replay modeled" : "✓ Immutable replay matched"}</li>
@@ -1324,7 +1505,7 @@ export default function Dashboard() {
                       </button>
                     </article>
                   ))}
-                {!data.runs.some((run) => run.status === "verified") && (
+                {!reportableRuns.length && (
                   <div className="saas-empty-state report-empty">
                     <b>No verification reports yet</b>
                     <p>Verified before-and-after reports appear after an identical scenario replay passes.</p>
@@ -1532,8 +1713,7 @@ export default function Dashboard() {
                   <section className="saas-card access-empty">
                     <b>No verified repair candidates</b>
                     <p>
-                      Verify an identical scenario replay to create a reviewable
-                      repair proposal.
+                      A repair proposal appears only after an observed, signed runner workflow produces a real candidate for review.
                     </p>
                   </section>
                 )}
@@ -1555,32 +1735,64 @@ export default function Dashboard() {
                       <h3>GitHub via Composio</h3>
                       <p>Hosted OAuth, repository discovery, immutable commit mapping, and approved draft PR access.</p>
                     </div>
-                    <span className={data.composioConnections.some((connection) => connection.status === "active") ? "connected" : "available"}>
-                      {data.composioConnections.some((connection) => connection.status === "active") ? "Connected" : data.configuration.composio.githubConfigured ? "Ready" : "Platform setup"}
+                    <span className={activeComposioConnections.length ? "connected" : "available"}>
+                      {activeComposioConnections.length ? "Connected" : data.configuration.composio.githubConfigured ? "Ready" : "Platform setup"}
                     </span>
                   </header>
-                  {data.composioConnections.some((connection) => connection.status === "active") ? (
+                  {activeComposioConnections.length ? (
                     <>
                       <div className="integration-account">
-                        <b>{data.composioConnections.find((connection) => connection.status === "active")?.provider_login}</b>
+                        <b>{activeComposioConnections.length === 1 ? activeComposioConnections[0].provider_login : `${activeComposioConnections.length} GitHub accounts`}</b>
                         <small>{data.composioRepositories.length} repositories synchronized · OAuth hosted by Composio</small>
                       </div>
+                      {data.composioRepositories.length > 6 && (
+                        <label className="repository-search">
+                          <span>Find a repository</span>
+                          <input
+                            type="search"
+                            value={repositoryQuery}
+                            onChange={(event) => setRepositorySearch({
+                              workspaceId: data.workspace.id,
+                              query: event.target.value,
+                            })}
+                            placeholder="Search owner/repository"
+                          />
+                        </label>
+                      )}
                       <div className="repository-picker">
-                        {data.composioRepositories.slice(0, 8).map((repository) => (
+                        {visibleComposioRepositories.map((repository) => (
                           <div key={repository.id}>
                             <span>
                               <b>{repository.full_name}</b>
                               <small>{repository.default_branch} · {repository.is_private ? "private" : "public"}</small>
                             </span>
-                            <button disabled={creating} onClick={() => importComposioRepository(repository.id)}>
-                              {data.projects.some((project) => project.repository.toLowerCase() === repository.full_name.toLowerCase() && project.scanned_at) ? "Refresh twin" : "Create twin"}
-                            </button>
+                            {canUseWorkspace ? (
+                              <button disabled={creating || !data.entitlements.canWrite} onClick={() => importComposioRepository(repository.id)}>
+                                {data.projects.some((project) => project.repository.toLowerCase() === repository.full_name.toLowerCase() && project.scanned_at) ? "Refresh twin" : "Create twin"}
+                              </button>
+                            ) : <em>Read only</em>}
                           </div>
                         ))}
+                        {!visibleComposioRepositories.length && (
+                          <p className="repository-empty">
+                            {data.composioRepositories.length ? "No repositories match this search." : "No repositories were returned. Sync the account or check its GitHub access."}
+                          </p>
+                        )}
                       </div>
                       <div className="integration-actions">
-                        <button className="secondary-integration" disabled={creating} onClick={() => syncComposio(data.composioConnections.find((connection) => connection.status === "active")!.id)}>Sync repositories</button>
-                        <button className="secondary-integration" onClick={() => (location.href = "/api/integrations/composio/github/start")}>Connect another account ↗</button>
+                        {canUseWorkspace && activeComposioConnections.map((connection) => (
+                          <button key={`sync-${connection.id}`} className="secondary-integration" disabled={creating} onClick={() => syncComposio(connection.id)}>
+                            Sync {connection.provider_login}
+                          </button>
+                        ))}
+                        {canAdminWorkspace && (
+                          <button className="secondary-integration" disabled={creating} onClick={() => (location.href = "/api/integrations/composio/github/start")}>Connect another account ↗</button>
+                        )}
+                        {canAdminWorkspace && activeComposioConnections.map((connection) => (
+                          <button key={`disconnect-${connection.id}`} className="secondary-integration danger" disabled={creating} onClick={() => disconnectComposio(connection.id, connection.provider_login)}>
+                            Disconnect {connection.provider_login}
+                          </button>
+                        ))}
                       </div>
                     </>
                   ) : (
@@ -1591,11 +1803,19 @@ export default function Dashboard() {
                         <li>✓ Workspace-bound, one-time OAuth state</li>
                         <li>✓ Repositories verified before import</li>
                       </ul>
-                      <button disabled={!data.configuration.composio.githubConfigured} onClick={() => (location.href = "/api/integrations/composio/github/start")}>
-                        {data.configuration.composio.fixture ? "Connect test GitHub →" : "Connect GitHub →"}
-                      </button>
-                      {!data.configuration.composio.githubConfigured && data.workspace.membership_role === "owner" && <button className="secondary-integration" onClick={() => (location.href = "/settings/providers")}>Configure Composio once →</button>}
-                      {!data.configuration.composio.githubConfigured && data.workspace.membership_role !== "owner" && <small>Ask a workspace owner to enable the platform GitHub connection.</small>}
+                      {data.configuration.composio.githubConfigured && canAdminWorkspace && (
+                        <button onClick={() => (location.href = "/api/integrations/composio/github/start")}>
+                          {data.configuration.composio.fixture ? "Connect test GitHub →" : "Connect GitHub →"}
+                        </button>
+                      )}
+                      {!data.configuration.composio.githubConfigured && (
+                        <div className="integration-setup-note">
+                          <b>Deployment setup required</b>
+                          <small>The app is deployed from GitHub, but runtime repository access needs a Composio API key and GitHub auth configuration in Vercel.</small>
+                          {canAdminWorkspace && <button className="secondary-integration" onClick={() => (location.href = "/settings/providers")}>View platform setup instructions →</button>}
+                        </div>
+                      )}
+                      {data.configuration.composio.githubConfigured && !canAdminWorkspace && <small>Ask a workspace owner or administrator to connect GitHub.</small>}
                     </>
                   )}
                 </article>
@@ -1775,27 +1995,12 @@ export default function Dashboard() {
                         <pre>
                           <code>{`curl -X POST ${typeof location !== "undefined" ? location.origin : "https://your-worldmodel-host"}/api/v1/runs \\\n  -H "Authorization: Bearer $WORLDMODEL_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"projectId":"${data.projects[0]?.id || "proj_id"}","scenario":"database"}'`}</code>
                         </pre>
-                        <p>
-                          POST again with{" "}
-                          <code>{`{"action":"verify","runId":"run_id"}`}</code>{" "}
-                          to replay the identical scenario after repair.
-                        </p>
+                        <p>API-triggered scenarios are planning runs and remain labeled modeled. API keys cannot promote their own telemetry to verified evidence.</p>
                         <details className="api-observed">
-                          <summary>Submit observed Playwright evidence →</summary>
+                          <summary>Submit verified observed evidence →</summary>
                           <p>
-                            CI runners can submit bounded before/after telemetry only after the disposable environment is destroyed. The run is labeled observed and retains its environment attestation.
+                            Download the project’s GitHub Actions workflow. It exchanges GitHub OIDC for a short-lived, run-bound token and submits evidence to <code>/api/v1/runner/evidence</code> only after the disposable environment is destroyed. Ordinary API keys are intentionally rejected.
                           </p>
-                          <pre><code>{`{
-  "action": "observe",
-  "projectId": "${data.projects[0]?.id || "proj_id"}",
-  "scenario": "database",
-  "fingerprint": "scn_database_800ms_v1",
-  "seed": "ci_run_20260714_001",
-  "environment": { "id": "wm-ci-8421", "destroyedAt": "2026-07-14T03:30:00Z" },
-  "journey": { "runner": "playwright", "name": "checkout", "startedAt": "2026-07-14T03:27:00Z", "endedAt": "2026-07-14T03:29:00Z" },
-  "before": { "resilienceScore": 38, "errorRate": 21.4, "latencyMs": 3190, "journeySuccess": 54, "serviceHealth": 57 },
-  "after": { "resilienceScore": 88, "errorRate": 1.2, "latencyMs": 734, "journeySuccess": 98, "serviceHealth": 96 }
-}`}</code></pre>
                         </details>
                       </article>
                       <article className="saas-card api-keys">
@@ -1815,7 +2020,7 @@ export default function Dashboard() {
                               <b>{key.name}</b>
                               <code>{key.key_prefix}</code>
                               <small>
-                                {JSON.parse(key.scopes_json).join(" · ")}
+                                {stringList(key.scopes_json).join(" · ") || "No scopes"}
                               </small>
                             </span>
                             <span>
@@ -1853,7 +2058,7 @@ export default function Dashboard() {
                           Key authentication, scopes, tenant isolation, and rate
                           limiting are active. External CI traffic still
                           requires an API-capable production ingress because
-                          this Sites deployment remains private.
+                          this Vercel deployment remains private.
                         </p>
                       </article>
                     </section>
@@ -2319,35 +2524,27 @@ export default function Dashboard() {
                       name="name"
                       required
                       defaultValue={data.workspace.name}
+                      disabled={!canAdminWorkspace}
                     />
                   </label>
-                  <label>
-                    Default branch
-                    <input defaultValue="main" disabled />
-                  </label>
-                  <button disabled={creating}>
-                    {creating ? "Saving…" : "Save changes"}
-                  </button>
+                  {canAdminWorkspace ? (
+                    <button disabled={creating}>
+                      {creating ? "Saving…" : "Save changes"}
+                    </button>
+                  ) : <p>Your workspace role has read-only access to these settings.</p>}
                 </form>
                 <article className="saas-card">
-                  <h3>Simulation safety</h3>
-                  <Toggle
-                    title="Require approval before repair"
-                    note="Human approval stays mandatory."
-                  />
-                  <Toggle
-                    title="Block outbound network"
-                    note="Mocks are used for external services."
-                  />
-                  <Toggle
-                    title="Auto-delete environments"
-                    note="Destroy after five minutes."
-                  />
+                  <h3>Enforced safeguards</h3>
+                  <ul className="safety-policies">
+                    <li><b>Human review required</b><span>Repairs cannot publish before an authorized approval.</span></li>
+                    <li><b>Evidence labels preserved</b><span>Sample, modeled, and observed results remain visibly distinct.</span></li>
+                    <li><b>Provider secrets server-side</b><span>OAuth credentials never pass through the dashboard.</span></li>
+                  </ul>
                 </article>
                 <article className="saas-card data-controls">
                   <h3>Provider credentials</h3>
-                  <p>Configure the GitHub App and project AI used by this local hackathon deployment. Production uses platform secrets.</p>
-                  <button onClick={() => (location.href = "/settings/providers")}>Open provider setup →</button>
+                  <p>{data.operatorAccess ? "Review deployment-wide provider readiness and local-development credentials." : "Provider credentials are managed by the platform operator and are never exposed to workspace members."}</p>
+                  {data.operatorAccess && <button onClick={() => (location.href = "/settings/providers")}>Open provider setup →</button>}
                 </article>
                 <article className="saas-card data-controls">
                   <h3>Data portability</h3>
@@ -2430,6 +2627,7 @@ export default function Dashboard() {
           <section
             className="saas-modal"
             role="dialog"
+            tabIndex={-1}
             aria-modal="true"
             aria-labelledby="create-title"
           >
@@ -2482,6 +2680,7 @@ export default function Dashboard() {
           <section
             className="saas-modal"
             role="dialog"
+            tabIndex={-1}
             aria-modal="true"
             aria-labelledby="invite-title"
           >
@@ -2502,8 +2701,14 @@ export default function Dashboard() {
               days.
             </p>
             {newInviteLink ? (
-              <div className="invite-secret">
-                <b>COPY THIS LINK NOW</b>
+              <div
+                className="invite-secret"
+                ref={inviteSecretRef}
+                role="status"
+                tabIndex={-1}
+                aria-labelledby="invite-link-title"
+              >
+                <b id="invite-link-title">COPY THIS LINK NOW</b>
                 <p>
                   It is shown once and should be delivered only to the invited
                   person.
@@ -2570,6 +2775,7 @@ export default function Dashboard() {
           <section
             className="upgrade-modal"
             role="dialog"
+            tabIndex={-1}
             aria-modal="true"
             aria-labelledby="upgrade-title"
           >
@@ -2800,7 +3006,15 @@ function SectionHeader({
     </section>
   );
 }
-function RunTable({ runs }: { runs: Run[] }) {
+function RunTable({
+  runs,
+  workspaceMode,
+  onOpenHistory,
+}: {
+  runs: Run[];
+  workspaceMode: Workspace["workspace_mode"];
+  onOpenHistory?: () => void;
+}) {
   return (
     <div className="run-table">
       <header>
@@ -2811,8 +3025,9 @@ function RunTable({ runs }: { runs: Run[] }) {
         <span>DATE</span>
         <span></span>
       </header>
-      {runs.map((run) => (
-        <article key={run.id}>
+      {runs.map((run) => {
+        const reportAvailable = hasVerificationReport(run, workspaceMode);
+        return <article key={run.id}>
           <div>
             <i>
               {run.scenario.includes("Payment")
@@ -2831,7 +3046,7 @@ function RunTable({ runs }: { runs: Run[] }) {
           </span>
           <span className="run-score">
             <b>{run.before_score}</b>
-            {run.after_score && (
+            {run.after_score !== null && (
               <>
                 <em>→</em>
                 <strong>{run.after_score}</strong>
@@ -2840,35 +3055,26 @@ function RunTable({ runs }: { runs: Run[] }) {
           </span>
           <span>{run.journey_success}%</span>
           <span>{dateLabel(run.created_at)}</span>
-          <button
-            aria-label={
-              run.status === "verified"
-                ? `Download ${run.scenario} report`
-                : `Open ${run.scenario}`
-            }
-            onClick={() =>
-              (location.href =
-                run.status === "verified"
-                  ? `/api/reports?run=${encodeURIComponent(run.id)}`
-                  : "/")
-            }
-          >
-            {run.status === "verified" ? "↓" : "→"}
-          </button>
-        </article>
-      ))}
+          {reportAvailable || onOpenHistory ? (
+            <button
+              aria-label={
+                reportAvailable
+                  ? `Download ${run.scenario} report`
+                  : `View ${run.scenario} in run history`
+              }
+              onClick={() => {
+                if (reportAvailable) location.href = `/api/reports?run=${encodeURIComponent(run.id)}`;
+                else onOpenHistory?.();
+              }}
+            >
+              {reportAvailable ? "↓" : "→"}
+            </button>
+          ) : (
+            <span className="run-action-unavailable" aria-label="No verification report available">—</span>
+          )}
+        </article>;
+      })}
     </div>
-  );
-}
-function Toggle({ title, note }: { title: string; note: string }) {
-  return (
-    <label className="toggle-row">
-      <span>
-        <b>{title}</b>
-        <small>{note}</small>
-      </span>
-      <input type="checkbox" checked disabled readOnly aria-label={`${title} is enforced`} />
-    </label>
   );
 }
 function Plan({

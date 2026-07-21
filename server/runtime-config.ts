@@ -1,11 +1,11 @@
-import { getRuntimeEnv } from "./runtime-env.ts";
+import { getRuntimeEnv, isLocalDevelopmentEnvironment } from "./runtime-env.ts";
 import { loadLocalProviderSettings } from "./provider-settings.ts";
 
 type RuntimeEnvironment = Record<string, string | undefined>;
 
 export async function effectiveRuntimeEnvironment(): Promise<RuntimeEnvironment> {
   const env = await getRuntimeEnv() as RuntimeEnvironment;
-  if (env.LOCAL_DEVELOPMENT === "true") return { ...env, ...await loadLocalProviderSettings() };
+  if (isLocalDevelopmentEnvironment(env)) return { ...env, ...await loadLocalProviderSettings() };
   return env;
 }
 
@@ -31,11 +31,12 @@ export async function businessConfiguration() {
     normalized(env.STRIPE_PRICE_STARTER) &&
     normalized(env.STRIPE_PRICE_PRO),
   );
+  const localDevelopment = isLocalDevelopmentEnvironment(env);
   return {
     composio: {
       configured: Boolean(composioApiKey && composioAuthConfigId),
       githubConfigured: Boolean(composioApiKey && composioAuthConfigId),
-      fixture: env.COMPOSIO_FIXTURE_MODE === "true" && env.LOCAL_DEVELOPMENT === "true",
+      fixture: env.COMPOSIO_FIXTURE_MODE === "true" && localDevelopment,
     },
     github: { configured: githubConfigured, appSlug: githubSlug },
     billing: {
@@ -47,10 +48,8 @@ export async function businessConfiguration() {
       model: normalized(env.OPENAI_AGENT_MODEL) || "gpt-5.6",
     },
     execution: {
-      campaignWorkflow: Boolean((env as unknown as Record<string, unknown>).WORLDMODEL_CAMPAIGN),
-      eventHub: Boolean((env as unknown as Record<string, unknown>).RUN_EVENTS),
+      campaignOrchestrator: Boolean((env as unknown as Record<string, unknown>).CAMPAIGN_ORCHESTRATOR),
       artifacts: Boolean((env as unknown as Record<string, unknown>).ARTIFACTS),
-      sandboxRunner: Boolean((env as unknown as Record<string, unknown>).SANDBOX_RUNNER),
       githubActionsRunner: Boolean((env as unknown as Record<string, unknown>).GITHUB_ACTIONS_RUNNER),
     },
   };
@@ -60,7 +59,7 @@ export async function composioConfiguration() {
   const env = await effectiveRuntimeEnvironment();
   const apiKey = normalized(env.COMPOSIO_API_KEY);
   const githubAuthConfigId = normalized(env.COMPOSIO_GITHUB_AUTH_CONFIG_ID);
-  const fixtureMode = env.COMPOSIO_FIXTURE_MODE === "true" && env.LOCAL_DEVELOPMENT === "true";
+  const fixtureMode = env.COMPOSIO_FIXTURE_MODE === "true" && isLocalDevelopmentEnvironment(env);
   const baseUrl = normalized(env.COMPOSIO_API_BASE_URL) || "https://backend.composio.dev/api/v3.1";
   if (!apiKey || !githubAuthConfigId) throw new Error("Composio GitHub connection is not configured");
   const parsed = new URL(baseUrl);
@@ -125,9 +124,19 @@ export function parseOperatorEmails(value: string | undefined) {
   );
 }
 
-export async function hasOperatorAccess(email: string) {
-  const env = await effectiveRuntimeEnvironment();
-  return parseOperatorEmails(env.WORLDMODEL_OPERATOR_EMAILS).has(
-    email.trim().toLowerCase(),
+export function parseOperatorUserIds(value: string | undefined) {
+  return new Set(
+    (value || "")
+      .split(",")
+      .map((userId) => userId.trim())
+      .filter((userId) => /^usr_[a-f0-9]{32}$/i.test(userId)),
   );
+}
+
+export async function hasOperatorAccess(email: string, userId?: string) {
+  const env = await effectiveRuntimeEnvironment();
+  const emailAllowed = parseOperatorEmails(env.WORLDMODEL_OPERATOR_EMAILS).has(email.trim().toLowerCase());
+  if (!emailAllowed) return false;
+  if (isLocalDevelopmentEnvironment(env)) return true;
+  return Boolean(userId && parseOperatorUserIds(env.WORLDMODEL_OPERATOR_USER_IDS).has(userId));
 }

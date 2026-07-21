@@ -17,19 +17,18 @@ test("campaigns are limited to twenty scenarios and three workers", () => {
   assert.throws(() => validateCampaign({ name: "too large", objective: "x", scenarios: Array(21).fill(scenario), concurrency: 3 }), /1-20/);
 });
 test("candidate hard gates cannot be bypassed by a high score", () => assert.equal(candidateScore({ resilienceImprovement: 100, regressionSafety: 100, complexity: 0, performance: 100, security: 100, evidenceConfidence: 100, hardGatesPassed: false }), 0));
-test("campaign execution preflight requires the durable workflow, event hub, artifact store, and selected runner", () => {
+test("campaign execution preflight requires the orchestrator, artifact store, and GitHub Actions runner", () => {
   const create = async () => ({ id: "workflow_1" });
-  const get = () => ({ fetch() {} });
   const put = async () => undefined;
   const fetch = async () => new Response();
-  const base = { WORLDMODEL_CAMPAIGN: { create }, RUN_EVENTS: { get }, ARTIFACTS: { put } };
-  assert.equal(evaluateCampaignExecutionReadiness(base, "cloudflare_sandbox").ready, false);
-  assert.deepEqual(evaluateCampaignExecutionReadiness(base, "cloudflare_sandbox").missing, ["SANDBOX_RUNNER service"]);
-  assert.equal(evaluateCampaignExecutionReadiness({ ...base, SANDBOX_RUNNER: { fetch } }, "cloudflare_sandbox").ready, true);
+  const base = { CAMPAIGN_ORCHESTRATOR: { create }, ARTIFACTS: { put } };
   assert.equal(evaluateCampaignExecutionReadiness({ ...base, GITHUB_ACTIONS_RUNNER: { fetch } }, "github_actions").ready, true);
+  assert.equal(evaluateCampaignExecutionReadiness(base, "github_actions").ready, false);
+  assert.deepEqual(evaluateCampaignExecutionReadiness(base, "github_actions").missing, ["GitHub Actions runner adapter"]);
+  assert.equal(evaluateCampaignExecutionReadiness({ ...base, GITHUB_ACTIONS_RUNNER: { fetch } }, "unsupported_backend").ready, false);
 });
 test("local execution preflight returns an actionable setup state", () => {
-  const result = evaluateCampaignExecutionReadiness({ LOCAL_DEVELOPMENT: "true" }, "cloudflare_sandbox");
+  const result = evaluateCampaignExecutionReadiness({ LOCAL_DEVELOPMENT: "true" }, "github_actions");
   assert.equal(result.code, "runner_not_configured");
-  assert.match(result.message, /local preview has no isolated durable campaign runner/i);
+  assert.match(result.message, /local preview has no durable campaign orchestrator/i);
 });

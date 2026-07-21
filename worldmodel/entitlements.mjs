@@ -40,7 +40,7 @@ export function resolveEntitlements({ workspace, subscription, now = new Date() 
   } else if ((!status || status === "pending" || status === "incomplete") && trialActive) {
     planKey = "pro_trial";
     lifecycle = "trial";
-    message = "Local Pro trial is active.";
+    message = "Pro trial is active.";
   } else {
     planKey = "free";
     lifecycle = status && ["canceled", "unpaid", "paused", "incomplete_expired"].includes(status) ? status : "free";

@@ -5,23 +5,23 @@ import { getRuntimeEnv } from "@/server/runtime-env";
 
 async function getD1() {
   const env = await getRuntimeEnv();
-  if (!env.DB) throw new Error("D1 binding DB is unavailable");
+  if (!env.DB) throw new Error("Durable database is unavailable");
   return env.DB;
 }
 
-async function requireOperator(email: string) {
-  if (!(await hasOperatorAccess(email)))
+async function requireOperator(email: string, userId: string) {
+  if (!(await hasOperatorAccess(email, userId)))
     throw new Error("Operator access is not configured for this account");
 }
 
-export async function getOperatorSnapshot(email: string) {
-  await requireOperator(email);
+export async function getOperatorSnapshot(email: string, userId: string) {
+  await requireOperator(email, userId);
   await ensureSaasSchema();
   const db = await getD1();
   const [workspaces, cases, totals] = await Promise.all([
     db
       .prepare(
-        "SELECT w.id, w.name, w.workspace_mode, w.plan, w.simulation_minutes, w.monthly_limit, w.trial_ends_at, w.created_at, s.status AS subscription_status, s.plan AS subscription_plan, s.current_period_end, (SELECT COUNT(*) FROM workspace_members m WHERE m.workspace_id = w.id) AS member_count, (SELECT COUNT(*) FROM projects p WHERE p.workspace_id = w.id) AS project_count, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = w.id AND r.status = 'verified') AS verified_run_count, (SELECT COUNT(*) FROM support_cases c WHERE c.workspace_id = w.id AND c.status NOT IN ('resolved','closed')) AS open_case_count FROM workspaces w LEFT JOIN subscriptions s ON s.workspace_id = w.id ORDER BY w.created_at DESC LIMIT 250",
+        "SELECT w.id, w.name, w.workspace_mode, w.plan, w.simulation_minutes, w.monthly_limit, w.trial_ends_at, w.created_at, s.status AS subscription_status, s.plan AS subscription_plan, s.current_period_end, (SELECT COUNT(*) FROM workspace_members m WHERE m.workspace_id = w.id) AS member_count, (SELECT COUNT(*) FROM projects p WHERE p.workspace_id = w.id) AS project_count, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = w.id AND r.status = 'verified' AND r.evidence_kind = 'observed') AS verified_run_count, (SELECT COUNT(*) FROM support_cases c WHERE c.workspace_id = w.id AND c.status NOT IN ('resolved','closed')) AS open_case_count FROM workspaces w LEFT JOIN subscriptions s ON s.workspace_id = w.id ORDER BY w.created_at DESC LIMIT 250",
       )
       .all(),
     db
@@ -31,7 +31,7 @@ export async function getOperatorSnapshot(email: string) {
       .all(),
     db
       .prepare(
-        "SELECT (SELECT COUNT(*) FROM workspaces) AS workspaces, (SELECT COUNT(*) FROM workspaces WHERE workspace_mode = 'customer') AS customer_workspaces, (SELECT COUNT(*) FROM workspaces WHERE workspace_mode = 'sample') AS sample_workspaces, (SELECT COUNT(*) FROM workspace_members) AS members, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE w.workspace_mode = 'customer') AS simulations, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE r.status = 'verified' AND w.workspace_mode = 'customer') AS verified_runs, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE r.evidence_kind = 'observed' AND w.workspace_mode = 'customer') AS observed_runs, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE r.evidence_kind = 'modeled' AND w.workspace_mode = 'customer') AS modeled_runs, (SELECT COUNT(*) FROM support_cases WHERE status NOT IN ('resolved','closed')) AS open_cases, (SELECT COALESCE(SUM(simulation_minutes),0) FROM workspaces WHERE workspace_mode = 'customer') AS simulation_minutes, (SELECT COUNT(*) FROM subscriptions s JOIN workspaces w ON w.id = s.workspace_id WHERE s.status IN ('active','trialing') AND w.workspace_mode = 'customer') AS active_subscriptions, (SELECT COUNT(*) FROM workspaces w WHERE w.workspace_mode = 'customer' AND EXISTS (SELECT 1 FROM projects p WHERE p.workspace_id = w.id AND p.repository_verified = 1)) AS activation_repository, (SELECT COUNT(*) FROM workspaces w WHERE w.workspace_mode = 'customer' AND EXISTS (SELECT 1 FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = w.id AND p.repository_verified = 1)) AS activation_simulation, (SELECT COUNT(*) FROM workspaces w WHERE w.workspace_mode = 'customer' AND EXISTS (SELECT 1 FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = w.id AND p.repository_verified = 1 AND r.status = 'verified' AND r.evidence_kind = 'observed')) AS activation_verification, (SELECT COUNT(*) FROM workspaces w WHERE w.workspace_mode = 'customer' AND ((SELECT COUNT(*) FROM workspace_members m WHERE m.workspace_id = w.id) > 1 OR EXISTS (SELECT 1 FROM workspace_invitations i WHERE i.workspace_id = w.id AND i.status = 'pending' AND datetime(i.expires_at) > CURRENT_TIMESTAMP))) AS activation_team",
+        "SELECT (SELECT COUNT(*) FROM workspaces) AS workspaces, (SELECT COUNT(*) FROM workspaces WHERE workspace_mode = 'customer') AS customer_workspaces, (SELECT COUNT(*) FROM workspaces WHERE workspace_mode = 'sample') AS sample_workspaces, (SELECT COUNT(*) FROM workspace_members) AS members, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE w.workspace_mode = 'customer') AS simulations, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE r.status = 'verified' AND r.evidence_kind = 'observed' AND w.workspace_mode = 'customer') AS verified_runs, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE r.evidence_kind = 'observed' AND w.workspace_mode = 'customer') AS observed_runs, (SELECT COUNT(*) FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE r.evidence_kind = 'modeled' AND w.workspace_mode = 'customer') AS modeled_runs, (SELECT COUNT(*) FROM support_cases WHERE status NOT IN ('resolved','closed')) AS open_cases, (SELECT COALESCE(SUM(simulation_minutes),0) FROM workspaces WHERE workspace_mode = 'customer') AS simulation_minutes, (SELECT COUNT(*) FROM subscriptions s JOIN workspaces w ON w.id = s.workspace_id WHERE s.status IN ('active','trialing') AND w.workspace_mode = 'customer') AS active_subscriptions, (SELECT COUNT(*) FROM workspaces w WHERE w.workspace_mode = 'customer' AND EXISTS (SELECT 1 FROM projects p WHERE p.workspace_id = w.id AND p.repository_verified = 1)) AS activation_repository, (SELECT COUNT(*) FROM workspaces w WHERE w.workspace_mode = 'customer' AND EXISTS (SELECT 1 FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = w.id AND p.repository_verified = 1)) AS activation_simulation, (SELECT COUNT(*) FROM workspaces w WHERE w.workspace_mode = 'customer' AND EXISTS (SELECT 1 FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = w.id AND p.repository_verified = 1 AND r.status = 'verified' AND r.evidence_kind = 'observed')) AS activation_verification, (SELECT COUNT(*) FROM workspaces w WHERE w.workspace_mode = 'customer' AND ((SELECT COUNT(*) FROM workspace_members m WHERE m.workspace_id = w.id) > 1 OR EXISTS (SELECT 1 FROM workspace_invitations i WHERE i.workspace_id = w.id AND i.status = 'pending' AND datetime(i.expires_at) > CURRENT_TIMESTAMP))) AS activation_team",
       )
       .first(),
   ]);
@@ -46,11 +46,12 @@ export async function getOperatorSnapshot(email: string) {
 
 export async function updateOperatorSupportCase(
   email: string,
+  userId: string,
   caseId: string,
   status: string,
   note: string,
 ) {
-  await requireOperator(email);
+  await requireOperator(email, userId);
   await ensureSaasSchema();
   const allowed = new Set([
     "open",

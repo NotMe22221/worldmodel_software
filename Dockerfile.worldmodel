@@ -1,5 +1,0 @@
-FROM docker.io/cloudflare/sandbox:0.12.3
-
-USER root
-RUN npm install -g pnpm@10 yarn@1.22.22 @playwright/test@1.55.0 && npx playwright install --with-deps chromium
-USER sandbox

@@ -3,6 +3,25 @@ import {
   stripeSecretConfiguration,
 } from "./runtime-config.ts";
 
+const STRIPE_REQUEST_TIMEOUT_MS = 20_000;
+
+function isAbortFailure(error: unknown) {
+  const name = error && typeof error === "object" && "name" in error ? error.name : "";
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+async function withStripeDeadline<T>(operation: (signal: AbortSignal) => Promise<T>) {
+  const timeoutSignal = AbortSignal.timeout(STRIPE_REQUEST_TIMEOUT_MS);
+  try {
+    return await operation(timeoutSignal);
+  } catch (error) {
+    if (timeoutSignal.aborted && (error === timeoutSignal.reason || isAbortFailure(error))) {
+      throw new Error("Stripe request timed out");
+    }
+    throw error;
+  }
+}
+
 function bytesToHex(bytes: Uint8Array) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
     "",
@@ -75,23 +94,26 @@ export async function createStripeCheckout(input: {
   });
   if (input.customerId) body.set("customer", input.customerId);
   else body.set("customer_email", input.email);
-  const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${config.secretKey}`,
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body,
+  return withStripeDeadline(async (signal) => {
+    const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.secretKey}`,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body,
+      signal,
+    });
+    const payload = (await response.json()) as {
+      url?: string;
+      error?: { message?: string };
+    };
+    if (!response.ok || !payload.url)
+      throw new Error(
+        payload.error?.message || "Stripe Checkout could not be created",
+      );
+    return payload.url;
   });
-  const payload = (await response.json()) as {
-    url?: string;
-    error?: { message?: string };
-  };
-  if (!response.ok || !payload.url)
-    throw new Error(
-      payload.error?.message || "Stripe Checkout could not be created",
-    );
-  return payload.url;
 }
 
 export async function createStripePortalWithKey(input: {
@@ -103,29 +125,32 @@ export async function createStripePortalWithKey(input: {
     customer: input.customerId,
     return_url: `${input.origin}/dashboard?billing=portal`,
   });
-  const response = await fetch(
-    "https://api.stripe.com/v1/billing_portal/sessions",
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${input.secretKey}`,
-        "content-type": "application/x-www-form-urlencoded",
+  return withStripeDeadline(async (signal) => {
+    const response = await fetch(
+      "https://api.stripe.com/v1/billing_portal/sessions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${input.secretKey}`,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body,
+        signal,
       },
-      body,
-    },
-  );
-  const payload = (await response.json()) as {
-    url?: string;
-    error?: { message?: string };
-  };
-  if (!response.ok || !payload.url)
-    throw new Error(
-      payload.error?.message || "Stripe billing portal could not be created",
     );
-  const url = new URL(payload.url);
-  if (url.protocol !== "https:" || url.hostname !== "billing.stripe.com")
-    throw new Error("Stripe returned an invalid billing portal URL");
-  return url.toString();
+    const payload = (await response.json()) as {
+      url?: string;
+      error?: { message?: string };
+    };
+    if (!response.ok || !payload.url)
+      throw new Error(
+        payload.error?.message || "Stripe billing portal could not be created",
+      );
+    const url = new URL(payload.url);
+    if (url.protocol !== "https:" || url.hostname !== "billing.stripe.com")
+      throw new Error("Stripe returned an invalid billing portal URL");
+    return url.toString();
+  });
 }
 
 export async function createStripePortal(input: {

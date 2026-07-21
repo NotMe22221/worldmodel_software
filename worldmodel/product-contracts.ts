@@ -1,5 +1,5 @@
 export type PackageManager = "npm" | "pnpm" | "yarn";
-export type ExecutionBackend = "cloudflare_sandbox" | "github_actions";
+export type ExecutionBackend = "github_actions";
 export type EvidenceMode = "estimated" | "observed";
 export type FaultKind = "dependency_outage" | "database_latency" | "traffic_surge";
 export type HealthState = "healthy" | "degraded" | "failed" | "unknown";

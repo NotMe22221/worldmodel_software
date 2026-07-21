@@ -1,6 +1,5 @@
 import { ApiAccessError, authenticateApiRequest, listApiRuns } from "@/db/developer-api";
-import { createSimulationRunForWorkspace, ingestObservedRunForWorkspace, verifySimulationRunForWorkspace, type ObservedRunInput } from "@/db/saas";
-import { normalizeObservedRun } from "@/worldmodel/observed-run.mjs";
+import { createSimulationRunForWorkspace } from "@/db/saas";
 
 function apiFailure(error: unknown, headers: Record<string, string> = {}) {
   if (error instanceof ApiAccessError) return Response.json({ error: { code: error.status === 429 ? "rate_limit_exceeded" : error.status === 403 ? "insufficient_scope" : error.status === 402 ? "subscription_required" : "unauthorized", message: error.message } }, { status: error.status, headers: error.headers });
@@ -26,18 +25,8 @@ export async function POST(request: Request) {
   try { payload = await request.json(); }
   catch { return Response.json({ error: { code: "invalid_request", message: "A valid JSON request body is required" } }, { status: 400, headers: context.rateHeaders }); }
   try {
-    if (payload.action === "observe") {
-      const run = await ingestObservedRunForWorkspace(
-        context.workspaceId,
-        context.actor,
-        normalizeObservedRun(payload) as ObservedRunInput,
-      );
-      return Response.json({ data: run }, { status: 201, headers: { ...context.rateHeaders, location: `/api/v1/runs?id=${encodeURIComponent(String((run as { id?: string })?.id || ""))}` } });
-    }
-    if (payload.action === "verify") {
-      if (!payload.runId) return Response.json({ error: { code: "invalid_request", message: "runId is required" } }, { status: 400, headers: context.rateHeaders });
-      const run = await verifySimulationRunForWorkspace(context.workspaceId, context.actor, payload.runId);
-      return Response.json({ data: run }, { headers: context.rateHeaders });
+    if (payload.action === "observe" || payload.action === "verify") {
+      return Response.json({ error: { code: "signed_runner_required", message: "API keys cannot promote self-attested metrics to verified evidence. Use the project GitHub Actions workflow and signed runner evidence exchange." } }, { status: 403, headers: context.rateHeaders });
     }
     if (!payload.projectId) return Response.json({ error: { code: "invalid_request", message: "projectId is required" } }, { status: 400, headers: context.rateHeaders });
     const scenario = payload.scenario;

@@ -1,24 +1,63 @@
-import { recordAudit } from "./audit";
+import { recordAudit } from "./audit.ts";
 import { resolveEntitlements, usagePeriod } from "../worldmodel/entitlements.mjs";
 import { buildWorkspaceActivation } from "../worldmodel/activation.mjs";
-import { getRuntimeEnv } from "@/server/runtime-env";
+import { getRuntimeEnv } from "../server/runtime-env.ts";
 
 async function getD1() {
   const env = await getRuntimeEnv();
-  if (!env.DB) throw new Error("D1 binding DB is unavailable");
+  if (!env.DB) throw new Error("Durable database is unavailable");
   return env.DB;
 }
 
 type ScenarioKey = "traffic" | "database" | "payments";
 
-function workspaceSuffix(email: string) {
-  return [...email.toLowerCase()]
-    .reduce(
-      (hash, char) =>
-        Math.imul(hash ^ char.charCodeAt(0), 16777619) >>> 0,
-      2166136261,
-    )
-    .toString(36);
+type CustomerWorkspace = { id: string; name: string; workspace_mode: string };
+
+function normalizeOwnerEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+function randomWorkspaceId() {
+  return `ws_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+async function ownedCustomerWorkspace(
+  db: Awaited<ReturnType<typeof getD1>>,
+  email: string,
+) {
+  return db
+    .prepare("SELECT w.id, w.name, w.workspace_mode FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE lower(m.email) = ? AND m.role = 'owner' AND lower(w.owner_email) = ? AND w.workspace_mode = 'customer' ORDER BY w.created_at, w.id LIMIT 1")
+    .bind(email, email)
+    .first<CustomerWorkspace>();
+}
+
+async function createOwnedCustomerWorkspace(
+  db: Awaited<ReturnType<typeof getD1>>,
+  email: string,
+  name: string,
+) {
+  const trialEndsAt = new Date(Date.now() + 14 * 86_400_000).toISOString();
+  const periodStart = usagePeriod().start;
+
+  // RuntimeDatabase.batch is a write transaction in both the local SQLite and
+  // Turso adapters. The owner-email predicates keep a UUID conflict from ever
+  // attaching a person to an unrelated workspace, while the NOT EXISTS guard
+  // makes concurrent onboarding for the same owner idempotent.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const id = randomWorkspaceId();
+    const results = await db.batch([
+      db.prepare("INSERT OR IGNORE INTO workspaces (id, name, owner_email, plan, simulation_minutes, monthly_limit, workspace_mode, trial_ends_at, usage_period_start) SELECT ?, ?, ?, 'pro_trial', 0, 500, 'customer', ?, ? WHERE NOT EXISTS (SELECT 1 FROM workspaces WHERE lower(owner_email) = ? AND workspace_mode = 'customer')").bind(id, name, email, trialEndsAt, periodStart, email),
+      db.prepare("INSERT INTO workspace_members (workspace_id, email, role) SELECT w.id, ?, 'owner' FROM workspaces w WHERE lower(w.owner_email) = ? AND w.workspace_mode = 'customer' AND NOT EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND lower(m.email) = ?) ORDER BY w.created_at, w.id LIMIT 1").bind(email, email, email),
+      db.prepare("INSERT INTO user_preferences (email, active_workspace_id) SELECT ?, w.id FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE lower(w.owner_email) = ? AND w.workspace_mode = 'customer' AND lower(m.email) = ? AND m.role = 'owner' ORDER BY w.created_at, w.id LIMIT 1 ON CONFLICT(email) DO UPDATE SET active_workspace_id = excluded.active_workspace_id, updated_at = CURRENT_TIMESTAMP").bind(email, email, email),
+    ]);
+    const workspace = await ownedCustomerWorkspace(db, email);
+    if (workspace) {
+      const insertion = results[0] as { meta?: { changes?: number } } | undefined;
+      return { workspace, created: Boolean(insertion?.meta?.changes) };
+    }
+  }
+
+  throw new Error("Unable to provision an isolated customer workspace");
 }
 
 const scenarioProfiles: Record<ScenarioKey, {
@@ -63,7 +102,7 @@ async function ensureProjectProvenanceColumns(db: Awaited<ReturnType<typeof getD
   if (!existing.has("scan_summary")) await db.prepare("ALTER TABLE projects ADD COLUMN scan_summary TEXT").run();
   if (!existing.has("scanned_at")) await db.prepare("ALTER TABLE projects ADD COLUMN scanned_at TEXT").run();
   await db.prepare("UPDATE projects SET source_kind = 'sample', repository_verified = 0 WHERE repository = 'shopstream/demo-store' AND id LIKE 'proj_checkout_%'").run();
-  await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1 WHERE EXISTS (SELECT 1 FROM github_repositories gr WHERE gr.workspace_id = projects.workspace_id AND lower(gr.full_name) = lower(projects.repository) AND gr.selected = 1)").run();
+  await db.prepare("UPDATE projects SET source_kind = 'github', repository_verified = 1 WHERE EXISTS (SELECT 1 FROM github_workspace_repositories gr WHERE gr.workspace_id = projects.workspace_id AND lower(gr.full_name) = lower(projects.repository) AND gr.selected = 1)").run();
   await db.prepare("UPDATE projects SET status = 'unverified' WHERE source_kind = 'manual' AND scanned_at IS NULL").run();
 }
 
@@ -114,6 +153,10 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS integration_states (token TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), purpose TEXT NOT NULL, installation_id TEXT, created_by TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT)"),
     db.prepare("CREATE TABLE IF NOT EXISTS github_installations (installation_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), account_login TEXT NOT NULL, account_type TEXT NOT NULL, repository_selection TEXT NOT NULL, permissions_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', connected_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE TABLE IF NOT EXISTS github_repositories (repository_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL REFERENCES github_installations(installation_id), workspace_id TEXT NOT NULL REFERENCES workspaces(id), full_name TEXT NOT NULL, default_branch TEXT NOT NULL, is_private INTEGER NOT NULL DEFAULT 1, selected INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS github_workspace_installations (workspace_id TEXT NOT NULL REFERENCES workspaces(id), installation_id TEXT NOT NULL, account_login TEXT NOT NULL, account_type TEXT NOT NULL, repository_selection TEXT NOT NULL, permissions_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', connected_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (workspace_id, installation_id))"),
+    db.prepare("CREATE INDEX IF NOT EXISTS github_workspace_installations_workspace_idx ON github_workspace_installations(workspace_id, status)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS github_workspace_repositories (workspace_id TEXT NOT NULL REFERENCES workspaces(id), repository_id TEXT NOT NULL, installation_id TEXT NOT NULL, full_name TEXT NOT NULL, default_branch TEXT NOT NULL, is_private INTEGER NOT NULL DEFAULT 1, selected INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (workspace_id, repository_id), FOREIGN KEY (workspace_id, installation_id) REFERENCES github_workspace_installations(workspace_id, installation_id))"),
+    db.prepare("CREATE INDEX IF NOT EXISTS github_workspace_repositories_workspace_idx ON github_workspace_repositories(workspace_id, selected, full_name)"),
     db.prepare("CREATE TABLE IF NOT EXISTS composio_connection_attempts (state_hash TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), created_by TEXT NOT NULL, composio_user_id TEXT NOT NULL, connected_account_id TEXT, auth_config_id TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS composio_attempts_workspace_idx ON composio_connection_attempts(workspace_id, expires_at)"),
     db.prepare("CREATE TABLE IF NOT EXISTS composio_connections (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), connected_account_id TEXT NOT NULL, composio_user_id TEXT NOT NULL, auth_config_id TEXT NOT NULL, toolkit_slug TEXT NOT NULL DEFAULT 'github', provider_login TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', connected_by TEXT NOT NULL, last_synced_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
@@ -140,6 +183,13 @@ export async function ensureSaasSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS api_rate_buckets (id TEXT PRIMARY KEY, api_key_id TEXT NOT NULL REFERENCES api_keys(id), bucket_start TEXT NOT NULL, request_count INTEGER NOT NULL DEFAULT 0)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS api_rate_buckets_key_start_idx ON api_rate_buckets(api_key_id, bucket_start)"),
   ]);
+  // Preserve deployed data without rebuilding or dropping the legacy tables.
+  // INSERT OR IGNORE makes this safe on every request and ensures the first
+  // tenant-scoped copy cannot later be reassigned by a legacy global UPSERT.
+  await db.batch([
+    db.prepare("INSERT OR IGNORE INTO github_workspace_installations (workspace_id, installation_id, account_login, account_type, repository_selection, permissions_json, status, connected_by, created_at, updated_at) SELECT workspace_id, installation_id, account_login, account_type, repository_selection, permissions_json, status, connected_by, created_at, updated_at FROM github_installations"),
+    db.prepare("INSERT OR IGNORE INTO github_workspace_repositories (workspace_id, repository_id, installation_id, full_name, default_branch, is_private, selected, synced_at) SELECT gr.workspace_id, gr.repository_id, gr.installation_id, gr.full_name, gr.default_branch, gr.is_private, gr.selected, gr.synced_at FROM github_repositories gr JOIN github_workspace_installations gi ON gi.workspace_id = gr.workspace_id AND gi.installation_id = gr.installation_id"),
+  ]);
   await ensureWorkspaceLifecycleColumns(db);
   await ensureProjectProvenanceColumns(db);
   await ensureRunEvidenceColumns(db);
@@ -149,17 +199,12 @@ export async function ensureSaasSchema() {
 
 export async function seedWorkspace(email: string, preferredName?: string) {
   const db = await getD1();
-  const existingMembership = await db.prepare("SELECT m.workspace_id FROM workspace_members m JOIN workspaces w ON w.id=m.workspace_id WHERE lower(m.email)=lower(?) AND w.workspace_mode='customer' LIMIT 1").bind(email).first();
+  const normalizedEmail = normalizeOwnerEmail(email);
+  const existingMembership = await db.prepare("SELECT m.workspace_id FROM workspace_members m JOIN workspaces w ON w.id=m.workspace_id WHERE lower(m.email)=? AND w.workspace_mode='customer' LIMIT 1").bind(normalizedEmail).first();
   if (existingMembership) return;
-  const suffix = workspaceSuffix(email);
-  const workspaceId = `ws_${suffix}`;
-  const ownerName = email.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 60) || "Engineering";
+  const ownerName = normalizedEmail.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 60) || "Engineering";
   const workspaceName = preferredName?.trim().slice(0, 80) || `${ownerName} Workspace`;
-  await db.batch([
-    db.prepare("INSERT OR IGNORE INTO workspaces (id, name, owner_email, plan, simulation_minutes, monthly_limit, workspace_mode, trial_ends_at, usage_period_start) VALUES (?, ?, ?, ?, 0, ?, 'customer', ?, ?)").bind(workspaceId, workspaceName, email, "pro_trial", 500, new Date(Date.now() + 14 * 86_400_000).toISOString(), usagePeriod().start),
-    db.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, email, role) VALUES (?, ?, ?)").bind(workspaceId, email, "owner"),
-    db.prepare("INSERT INTO user_preferences (email, active_workspace_id) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET active_workspace_id=excluded.active_workspace_id, updated_at=CURRENT_TIMESTAMP").bind(email.toLowerCase(), workspaceId),
-  ]);
+  await createOwnedCustomerWorkspace(db, normalizedEmail, workspaceName);
 }
 
 export async function getSaasSnapshot(email: string) {
@@ -176,13 +221,12 @@ export async function getSaasSnapshot(email: string) {
   }
   const projects = await db.prepare("SELECT * FROM projects WHERE workspace_id = ? ORDER BY updated_at DESC").bind(workspace.id).all();
   const runs = await db.prepare("SELECT r.*, p.name AS project_name, p.source_kind, p.repository_verified FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? ORDER BY r.created_at DESC LIMIT 20").bind(workspace.id).all();
-  await db.prepare("INSERT OR IGNORE INTO repair_proposals (id, workspace_id, run_id, status, title, summary, files_json, tests_json, risks_json, created_by, requested_at) SELECT 'repair_' || substr(r.id, 5), ?, r.id, 'ready_for_review', 'Graceful ' || lower(r.scenario) || ' recovery', 'Codex generated bounded timeout, idempotency, and recovery controls for the verified scenario.', '[\"src/payment.ts\",\"tests/checkout.spec.mjs\"]', '[\"Identical scenario replay\",\"Critical user journey\",\"Duplicate-order regression\"]', '[\"Regional failover remains unverified\",\"Queue saturation beyond the tested load remains unverified\"]', 'codex@system.worldmodel', CURRENT_TIMESTAMP FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE p.workspace_id = ? AND r.status = 'verified'").bind(workspace.id, workspace.id).run();
-  const repairs = await db.prepare("SELECT rp.*, r.scenario, r.scenario_fingerprint, r.before_score, r.after_score, r.verified_at, r.evidence_kind, r.environment_id, r.journey_runner, r.environment_destroyed_at, r.before_service_health, r.after_service_health, p.name AS project_name, p.repository, p.branch AS project_branch, p.source_kind, p.repository_verified FROM repair_proposals rp JOIN simulation_runs r ON r.id = rp.run_id JOIN projects p ON p.id = r.project_id WHERE rp.workspace_id = ? ORDER BY rp.updated_at DESC").bind(workspace.id).all();
+  const repairs = await db.prepare("SELECT rp.*, r.scenario, r.scenario_fingerprint, r.before_score, r.after_score, r.verified_at, r.evidence_kind, r.environment_id, r.journey_runner, r.environment_destroyed_at, r.before_service_health, r.after_service_health, p.name AS project_name, p.repository, p.branch AS project_branch, p.source_kind, p.repository_verified FROM repair_proposals rp JOIN simulation_runs r ON r.id = rp.run_id JOIN projects p ON p.id = r.project_id WHERE rp.workspace_id = ? AND NOT (rp.created_by = 'codex@system.worldmodel' AND rp.summary = 'Codex generated bounded timeout, idempotency, and recovery controls for the verified scenario.') ORDER BY rp.updated_at DESC").bind(workspace.id).all();
   const members = await db.prepare("SELECT email, role, created_at FROM workspace_members WHERE workspace_id = ? ORDER BY created_at").bind(workspace.id).all();
   const availableWorkspaces = await db.prepare("SELECT w.id, w.name, w.workspace_mode, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id WHERE lower(m.email) = lower(?) AND w.workspace_mode='customer' ORDER BY w.name").bind(email).all();
   const pendingInvitations = (workspace.membership_role === "owner" || workspace.membership_role === "admin") ? await db.prepare("SELECT id, email, role, status, invited_by, expires_at, created_at, accepted_at, revoked_at FROM workspace_invitations WHERE workspace_id = ? AND status = 'pending' AND datetime(expires_at) > CURRENT_TIMESTAMP ORDER BY created_at DESC").bind(workspace.id).all() : { results: [] as Record<string, unknown>[] };
-  const githubInstallations = await db.prepare("SELECT installation_id, account_login, account_type, repository_selection, status, created_at AS connected_at FROM github_installations WHERE workspace_id = ? ORDER BY created_at DESC").bind(workspace.id).all();
-  const githubRepositories = await db.prepare("SELECT repository_id, installation_id, full_name, default_branch, is_private, selected, synced_at FROM github_repositories WHERE workspace_id = ? ORDER BY selected DESC, full_name LIMIT 100").bind(workspace.id).all();
+  const githubInstallations = await db.prepare("SELECT installation_id, account_login, account_type, repository_selection, status, created_at AS connected_at FROM github_workspace_installations WHERE workspace_id = ? ORDER BY created_at DESC").bind(workspace.id).all();
+  const githubRepositories = await db.prepare("SELECT repository_id, installation_id, full_name, default_branch, is_private, selected, synced_at FROM github_workspace_repositories WHERE workspace_id = ? ORDER BY selected DESC, full_name LIMIT 100").bind(workspace.id).all();
   const composioConnections = await db.prepare("SELECT id, connected_account_id, provider_login, toolkit_slug, status, last_synced_at, created_at AS connected_at FROM composio_connections WHERE workspace_id = ? ORDER BY created_at DESC").bind(workspace.id).all();
   const composioRepositories = await db.prepare("SELECT id, connection_id, repository_id, full_name, default_branch, is_private, html_url, selected, synced_at FROM composio_github_repositories WHERE workspace_id = ? ORDER BY selected DESC, full_name LIMIT 100").bind(workspace.id).all();
   const subscription = await db.prepare("SELECT status, plan, current_period_end, updated_at, CASE WHEN stripe_customer_id IS NOT NULL THEN 1 ELSE 0 END AS portal_available FROM subscriptions WHERE workspace_id = ?").bind(workspace.id).first();
@@ -227,24 +271,18 @@ export async function switchWorkspace(email: string, workspaceId: string) {
 
 export async function provisionCustomerWorkspace(email: string, preferredName?: string) {
   await ensureSaasSchema();
-  await seedWorkspace(email, preferredName);
   const db = await getD1();
-  const existing = await db.prepare("SELECT w.id, w.name, w.workspace_mode FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE lower(m.email) = lower(?) AND m.role = 'owner' AND w.workspace_mode = 'customer' ORDER BY w.created_at LIMIT 1").bind(email).first<{ id: string; name: string; workspace_mode: string }>();
+  const normalizedEmail = normalizeOwnerEmail(email);
+  const existing = await ownedCustomerWorkspace(db, normalizedEmail);
   if (existing) {
-    await switchWorkspace(email, existing.id);
+    await switchWorkspace(normalizedEmail, existing.id);
     return { workspace: existing, created: false };
   }
-  const id = `ws_customer_${workspaceSuffix(email)}`;
-  const prefix = email.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 45) || "Customer";
-  const name = `${prefix} Workspace`;
-  const insertion = await db.prepare("INSERT OR IGNORE INTO workspaces (id, name, owner_email, plan, simulation_minutes, monthly_limit, workspace_mode, trial_ends_at, usage_period_start) VALUES (?, ?, ?, 'pro_trial', 0, 500, 'customer', ?, ?)").bind(id, name, email.toLowerCase(), new Date(Date.now() + 14 * 86_400_000).toISOString(), usagePeriod().start).run();
-  await db.batch([
-    db.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, email, role) VALUES (?, ?, 'owner')").bind(id, email.toLowerCase()),
-    db.prepare("INSERT INTO user_preferences (email, active_workspace_id) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET active_workspace_id = excluded.active_workspace_id, updated_at = CURRENT_TIMESTAMP").bind(email.toLowerCase(), id),
-  ]);
-  const created = Boolean(insertion.meta?.changes);
-  if (created) await recordAudit({ workspaceId: id, actorEmail: email, action: "workspace.provisioned", targetType: "workspace", targetId: id, summary: "Provisioned a clean customer workspace", metadata: { source: "account_onboarding" } });
-  return { workspace: { id, name, workspace_mode: "customer" }, created };
+  const prefix = normalizedEmail.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 45) || "Customer";
+  const name = preferredName?.trim().slice(0, 80) || `${prefix} Workspace`;
+  const provisioned = await createOwnedCustomerWorkspace(db, normalizedEmail, name);
+  if (provisioned.created) await recordAudit({ workspaceId: provisioned.workspace.id, actorEmail: normalizedEmail, action: "workspace.provisioned", targetType: "workspace", targetId: provisioned.workspace.id, summary: "Provisioned a clean customer workspace", metadata: { source: "account_onboarding" } });
+  return provisioned;
 }
 
 export async function getWorkspaceEntitlements(workspaceId: string) {
@@ -311,57 +349,10 @@ export async function createSimulationRunForWorkspace(workspaceId: string, actor
   const id = `run_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const seed = `wm_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
   await db.batch([
-    db.prepare("INSERT INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, scenario_key, scenario_fingerprint, seed, before_error_rate, before_latency_ms, before_journey_success, evidence_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'modeled')").bind(id, project.id, profile.label, "completed", profile.before.score, null, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess, 120, scenarioKey, profile.fingerprint, seed, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess),
+    db.prepare("INSERT INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, scenario_key, scenario_fingerprint, seed, before_error_rate, before_latency_ms, before_journey_success, evidence_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'modeled')").bind(id, project.id, profile.label, "modeled", profile.before.score, null, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess, 120, scenarioKey, profile.fingerprint, seed, profile.before.errorRate, profile.before.latencyMs, profile.before.journeySuccess),
     db.prepare("UPDATE workspaces SET simulation_minutes = simulation_minutes + 2 WHERE id = ?").bind(workspace.id),
   ]);
-  await recordAudit({ workspaceId: workspace.id, actorEmail: actor, action: "simulation.completed", targetType: "simulation_run", targetId: id, summary: `${profile.label} exposed a release risk`, metadata: { scenario: scenarioKey, fingerprint: profile.fingerprint, beforeScore: profile.before.score } });
-  return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(id).first();
-}
-
-type ObservedMetricSet = { resilienceScore: number; errorRate: number; latencyMs: number; journeySuccess: number; serviceHealth: number };
-export type ObservedRunInput = {
-  projectId: string;
-  scenario: ScenarioKey;
-  fingerprint: string;
-  seed: string;
-  environmentId: string;
-  environmentDestroyedAt: string;
-  journeyRunner: "playwright";
-  journeyName: string;
-  startedAt: string;
-  endedAt: string;
-  durationSeconds: number;
-  before: ObservedMetricSet;
-  after: ObservedMetricSet;
-};
-
-export async function ingestObservedRunForWorkspace(workspaceId: string, actor: string, input: ObservedRunInput) {
-  const db = await getD1();
-  const entitlements = await getWorkspaceEntitlements(workspaceId);
-  requireWriteEntitlement(entitlements);
-  const project = await db.prepare("SELECT id FROM projects WHERE id = ? AND workspace_id = ?").bind(input.projectId, workspaceId).first<{ id: string }>();
-  if (!project) throw new Error("Project not found in this workspace");
-  const existing = await db.prepare("SELECT * FROM simulation_runs WHERE project_id = ? AND seed = ? AND evidence_kind = 'observed' LIMIT 1").bind(project.id, input.seed).first<Record<string, unknown>>();
-  if (existing) {
-    if (existing.scenario_fingerprint !== input.fingerprint || existing.environment_id !== input.environmentId)
-      throw new Error("seed was already used for a different observed run");
-    return existing;
-  }
-  const minutes = Math.max(1, Math.ceil(input.durationSeconds / 60));
-  const workspace = await db.prepare("SELECT simulation_minutes FROM workspaces WHERE id = ?").bind(workspaceId).first<{ simulation_minutes: number }>();
-  if (!workspace) throw new Error("Workspace not found");
-  if (Number(workspace.simulation_minutes) + minutes > entitlements.limits.simulationMinutes) throw new Error("Monthly simulation minute limit reached");
-  const id = `run_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
-  const profile = scenarioProfiles[input.scenario];
-  const beforeErrorRate = `${input.before.errorRate}%`;
-  const afterErrorRate = `${input.after.errorRate}%`;
-  const attestation = JSON.stringify({ journeyName: input.journeyName, startedAt: input.startedAt, endedAt: input.endedAt });
-  await db.batch([
-    db.prepare("INSERT INTO simulation_runs (id, project_id, scenario, status, before_score, after_score, error_rate, latency_ms, journey_success, duration_seconds, scenario_key, scenario_fingerprint, seed, before_error_rate, after_error_rate, before_latency_ms, after_latency_ms, before_journey_success, after_journey_success, verified_at, evidence_kind, environment_id, journey_runner, environment_destroyed_at, before_service_health, after_service_health, attestation_json, created_at) VALUES (?, ?, ?, 'verified', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'observed', ?, ?, ?, ?, ?, ?, ?)").bind(id, project.id, profile.label, input.before.resilienceScore, input.after.resilienceScore, afterErrorRate, input.after.latencyMs, input.after.journeySuccess, input.durationSeconds, input.scenario, input.fingerprint, input.seed, beforeErrorRate, afterErrorRate, input.before.latencyMs, input.after.latencyMs, input.before.journeySuccess, input.after.journeySuccess, input.environmentId, input.journeyRunner, input.environmentDestroyedAt, input.before.serviceHealth, input.after.serviceHealth, attestation, input.startedAt),
-    db.prepare("UPDATE workspaces SET simulation_minutes = simulation_minutes + ? WHERE id = ?").bind(minutes, workspaceId),
-    db.prepare("UPDATE projects SET resilience_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(input.after.resilienceScore, project.id),
-  ]);
-  await recordAudit({ workspaceId, actorEmail: actor, action: "simulation.observed", targetType: "simulation_run", targetId: id, summary: `${profile.label} observed in ${input.environmentId}`, metadata: { scenario: input.scenario, fingerprint: input.fingerprint, environmentId: input.environmentId, journeyRunner: input.journeyRunner, environmentDestroyedAt: input.environmentDestroyedAt } });
+  await recordAudit({ workspaceId: workspace.id, actorEmail: actor, action: "simulation.modeled", targetType: "simulation_run", targetId: id, summary: `${profile.label} planning forecast created`, metadata: { scenario: scenarioKey, fingerprint: profile.fingerprint, modeled: true, beforeScore: profile.before.score } });
   return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(id).first();
 }
 
@@ -373,18 +364,13 @@ export async function verifySimulationRun(email: string, runId: string) {
 }
 
 export async function verifySimulationRunForWorkspace(workspaceId: string, actor: string, runId: string) {
+  void actor;
   requireWriteEntitlement(await getWorkspaceEntitlements(workspaceId));
   const db = await getD1();
-  const run = await db.prepare("SELECT r.* FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspaceId).first<{ scenario_key: ScenarioKey | null; evidence_kind: string } & Record<string, unknown>>();
+  const run = await db.prepare("SELECT r.* FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspaceId).first<{ evidence_kind: string } & Record<string, unknown>>();
   if (!run) throw new Error("Simulation run not found in this workspace");
   if (run.evidence_kind === "observed") return run;
-  const key = run.scenario_key;
-  if (!key || !scenarioProfiles[key]) throw new Error("This legacy run cannot be replayed");
-  const profile = scenarioProfiles[key];
-  await db.prepare("UPDATE simulation_runs SET status = 'verified', after_score = ?, error_rate = ?, latency_ms = ?, journey_success = ?, after_error_rate = ?, after_latency_ms = ?, after_journey_success = ?, verified_at = CURRENT_TIMESTAMP WHERE id = ?").bind(profile.after.score, profile.after.errorRate, profile.after.latencyMs, profile.after.journeySuccess, profile.after.errorRate, profile.after.latencyMs, profile.after.journeySuccess, runId).run();
-  await db.prepare("UPDATE projects SET resilience_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT project_id FROM simulation_runs WHERE id = ?)").bind(profile.after.score, runId).run();
-  await recordAudit({ workspaceId, actorEmail: actor, action: "simulation.verified", targetType: "simulation_run", targetId: runId, summary: `${profile.label} repair passed identical replay`, metadata: { scenario: key, afterScore: profile.after.score } });
-  return db.prepare("SELECT * FROM simulation_runs WHERE id = ?").bind(runId).first();
+  throw new Error("Modeled planning runs cannot become verified evidence. Submit signed observed runner evidence instead");
 }
 
 export async function getSimulationReport(email: string, runId: string) {
@@ -393,6 +379,8 @@ export async function getSimulationReport(email: string, runId: string) {
   const db = await getD1();
   const run = await db.prepare("SELECT r.*, p.name AS project_name, p.repository, p.branch, p.source_kind, p.repository_verified, w.workspace_mode FROM simulation_runs r JOIN projects p ON p.id = r.project_id JOIN workspaces w ON w.id = p.workspace_id WHERE r.id = ? AND p.workspace_id = ?").bind(runId, workspace.id).first<Record<string, unknown>>();
   if (!run) throw new Error("Verification report not found");
-  if (run.status !== "verified") throw new Error("Verification report is available after an identical replay passes");
+  const observedEvidence = run.workspace_mode === "customer" && run.evidence_kind === "observed";
+  const sampleEvidence = run.workspace_mode === "sample" && run.evidence_kind === "sample_fixture";
+  if (run.status !== "verified" || (!observedEvidence && !sampleEvidence)) throw new Error("Verification reports require signed observed runner evidence or an isolated sample fixture");
   return run;
 }

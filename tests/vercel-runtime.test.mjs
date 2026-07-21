@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { vercelRuntimeEnv } from "../server/vercel-runtime.ts";
 
 function result(columns = [], rows = [], rowsAffected = 0, lastInsertRowid) {
@@ -80,35 +82,50 @@ test("production runtime selects the Turso-backed Vercel adapter", async () => {
     url: process.env.TURSO_DATABASE_URL,
     token: process.env.TURSO_AUTH_TOKEN,
     local: process.env.WORLDMODEL_LOCAL_RUNTIME,
+    localDevelopment: process.env.LOCAL_DEVELOPMENT,
   };
   process.env.VERCEL = "1";
   process.env.TURSO_DATABASE_URL = "libsql://worldmodel.turso.io";
   process.env.TURSO_AUTH_TOKEN = "secret";
-  delete process.env.WORLDMODEL_LOCAL_RUNTIME;
+  process.env.WORLDMODEL_LOCAL_RUNTIME = "true";
+  process.env.LOCAL_DEVELOPMENT = "true";
   try {
     const { getRuntimeEnv } = await import("../server/runtime-env.ts");
     const env = await getRuntimeEnv();
     assert.equal(env.VERCEL_RUNTIME, "true");
     assert.equal(env.VERCEL_STORAGE_PROVIDER, "turso");
+    assert.equal(env.WORLDMODEL_LOCAL_RUNTIME, "false");
+    assert.equal(env.LOCAL_DEVELOPMENT, "false");
     assert.equal(typeof env.DB.prepare, "function");
   } finally {
     if (previous.VERCEL === undefined) delete process.env.VERCEL; else process.env.VERCEL = previous.VERCEL;
     if (previous.url === undefined) delete process.env.TURSO_DATABASE_URL; else process.env.TURSO_DATABASE_URL = previous.url;
     if (previous.token === undefined) delete process.env.TURSO_AUTH_TOKEN; else process.env.TURSO_AUTH_TOKEN = previous.token;
     if (previous.local === undefined) delete process.env.WORLDMODEL_LOCAL_RUNTIME; else process.env.WORLDMODEL_LOCAL_RUNTIME = previous.local;
+    if (previous.localDevelopment === undefined) delete process.env.LOCAL_DEVELOPMENT; else process.env.LOCAL_DEVELOPMENT = previous.localDevelopment;
   }
 });
 
-test("Vercel build preflight warns about missing Turso storage without printing secrets", () => {
+test("Vercel production build preflight fails closed on missing Turso storage without printing secrets", () => {
   const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
     cwd: process.cwd(),
     encoding: "utf8",
     env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", TURSO_DATABASE_URL: "", TURSO_AUTH_TOKEN: "never-print-this", WORLDMODEL_PUBLIC_ORIGIN: "" },
   });
-  assert.equal(result.status, 0);
+  assert.equal(result.status, 1);
   assert.match(result.stderr, /TURSO_DATABASE_URL/);
-  assert.match(result.stderr, /build will continue/i);
-  assert.match(result.stderr, /WORLDMODEL_PUBLIC_ORIGIN/);
+  assert.match(result.stderr, /Connect Turso/i);
+  assert.doesNotMatch(result.stderr, /never-print-this/);
+});
+
+test("Vercel preview build preflight warns instead of masking its configuration state", () => {
+  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "preview", TURSO_DATABASE_URL: "", TURSO_AUTH_TOKEN: "never-print-this" },
+  });
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /Preview data-backed routes/i);
   assert.doesNotMatch(result.stderr, /never-print-this/);
 });
 
@@ -120,4 +137,86 @@ test("Vercel build preflight accepts complete production Turso configuration", (
   });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /storage preflight passed/);
+});
+
+test("Vercel build preflight rejects local-only runtime flags", () => {
+  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret", WORLDMODEL_LOCAL_RUNTIME: "true" },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /local-only flags/i);
+  assert.match(result.stderr, /WORLDMODEL_LOCAL_RUNTIME/);
+  assert.doesNotMatch(result.stderr, /secret/);
+});
+
+test("registered migrations include the product and tenant-isolation schema", () => {
+  const database = new DatabaseSync(":memory:");
+  const migrations = readMigrationFiles({
+    migrationsFolder: new URL("../drizzle", import.meta.url).pathname,
+  });
+  for (const migration of migrations) {
+    for (const statement of migration.sql) {
+      if (statement.trim()) database.exec(statement);
+    }
+  }
+  const names = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('model_versions','composio_connections','github_workspace_installations','github_workspace_repositories') ORDER BY name")
+    .all()
+    .map((row) => row.name);
+  assert.deepEqual(names, [
+    "composio_connections",
+    "github_workspace_installations",
+    "github_workspace_repositories",
+    "model_versions",
+  ]);
+});
+
+test("existing databases can register the old manual product migration before upgrading", () => {
+  const database = new DatabaseSync(":memory:");
+  const migrations = readMigrationFiles({
+    migrationsFolder: new URL("../drizzle", import.meta.url).pathname,
+  });
+
+  for (const migration of migrations.slice(0, 17)) {
+    for (const statement of migration.sql) {
+      if (statement.trim()) database.exec(statement);
+    }
+  }
+
+  // Before 0017 was registered in Drizzle's journal, the deployment guide told
+  // operators to apply its original, non-idempotent SQL manually. Recreate that
+  // state, then prove the now-registered migration can be applied safely.
+  for (const statement of migrations[17].sql) {
+    const originalStatement = statement
+      .replace(/^CREATE TABLE IF NOT EXISTS /, "CREATE TABLE ")
+      .replace(/^CREATE UNIQUE INDEX IF NOT EXISTS /, "CREATE UNIQUE INDEX ")
+      .replace(/^CREATE INDEX IF NOT EXISTS /, "CREATE INDEX ");
+    if (originalStatement.trim()) database.exec(originalStatement);
+  }
+  for (const statement of migrations[17].sql) {
+    if (statement.trim()) database.exec(statement);
+  }
+
+  const beforeUpgrade = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'composio_%'")
+    .all();
+  assert.deepEqual(beforeUpgrade, []);
+
+  for (const migration of migrations.slice(18)) {
+    for (const statement of migration.sql) {
+      if (statement.trim()) database.exec(statement);
+    }
+  }
+
+  const afterUpgrade = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'composio_%' ORDER BY name")
+    .all()
+    .map((row) => row.name);
+  assert.deepEqual(afterUpgrade, [
+    "composio_connection_attempts",
+    "composio_connections",
+    "composio_github_repositories",
+  ]);
 });

@@ -1,11 +1,11 @@
-import { getRuntimeEnv } from "./runtime-env";
+import { getRuntimeEnv, type RuntimeDatabase } from "./runtime-env.ts";
 
-type OidcClaims = { iss?: string; aud?: string | string[]; exp?: number; nbf?: number; repository?: string; ref?: string; workflow_ref?: string };
+export type OidcClaims = { iss?: string; aud?: string | string[]; exp?: number; nbf?: number; repository?: string; ref?: string; workflow_ref?: string; event_name?: string };
 type RunnerClaims = { workspaceId: string; projectId: string; runId: string; repository: string; exp: number; jti: string };
 
 function decode(value: string) { const padded = value.replaceAll("-", "+").replaceAll("_", "/") + "===".slice((value.length + 3) % 4); const binary = atob(padded); return Uint8Array.from(binary, (character) => character.charCodeAt(0)); }
 function encode(value: Uint8Array | string) { const binary = typeof value === "string" ? value : Array.from(value, (byte) => String.fromCharCode(byte)).join(""); return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""); }
-async function runtime() { return await getRuntimeEnv() as unknown as { DB: D1Database; RUNNER_TOKEN_SECRET?: string }; }
+async function runtime() { return await getRuntimeEnv() as unknown as { DB: RuntimeDatabase; RUNNER_TOKEN_SECRET?: string }; }
 
 async function verifyGithubJwt(token: string, audience: string) {
   const parts = token.split("."); if (parts.length !== 3) throw new Error("oidc_invalid: GitHub OIDC token is malformed");
@@ -23,12 +23,22 @@ async function verifyGithubJwt(token: string, audience: string) {
 
 async function runnerKey(secret: string, use: KeyUsage[]) { return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, use); }
 
+export function expectedRunnerWorkflowRef(repository: string, branch: string, projectId: string) {
+  return `${repository}/.github/workflows/worldmodel-${projectId}.yml@refs/heads/${branch}`;
+}
+
+export function runnerOidcClaimsMatch(claims: OidcClaims, input: { repository: string; branch: string; projectId: string }) {
+  if (claims.repository?.toLowerCase() !== input.repository.toLowerCase()) return false;
+  if (claims.ref !== `refs/heads/${input.branch}` || claims.event_name !== "workflow_dispatch") return false;
+  return claims.workflow_ref === expectedRunnerWorkflowRef(claims.repository, input.branch, input.projectId);
+}
+
 export async function exchangeRunnerOidc(input: { oidcToken: string; audience: string; projectId: string; runId: string }) {
   const env = await runtime(); if (!env.RUNNER_TOKEN_SECRET) throw new Error("runner_not_configured: RUNNER_TOKEN_SECRET is missing");
   const claims = await verifyGithubJwt(input.oidcToken, input.audience);
   const record = await env.DB.prepare("SELECT p.workspace_id, p.repository, p.branch, cr.status FROM projects p JOIN campaign_runs cr ON cr.project_id = p.id WHERE p.id = ? AND cr.id = ? LIMIT 1").bind(input.projectId, input.runId).first<{ workspace_id: string; repository: string; branch: string; status: string }>();
   if (!record || !["queued", "running", "cancellation_requested"].includes(record.status)) throw new Error("run_not_found: Campaign run is not accepting evidence");
-  if (claims.repository?.toLowerCase() !== record.repository.toLowerCase() || claims.ref !== `refs/heads/${record.branch}`) throw new Error("oidc_unauthorized: GitHub repository or branch does not match this project");
+  if (!runnerOidcClaimsMatch(claims, { repository: record.repository, branch: record.branch, projectId: input.projectId })) throw new Error("oidc_unauthorized: GitHub repository, branch, event, or workflow does not match this project");
   const runner: RunnerClaims = { workspaceId: record.workspace_id, projectId: input.projectId, runId: input.runId, repository: record.repository, exp: Math.floor(Date.now() / 1000) + 900, jti: crypto.randomUUID() };
   const header = encode(JSON.stringify({ alg: "HS256", typ: "JWT" })), payload = encode(JSON.stringify(runner));
   const signature = await crypto.subtle.sign("HMAC", await runnerKey(env.RUNNER_TOKEN_SECRET, ["sign"]), new TextEncoder().encode(`${header}.${payload}`));

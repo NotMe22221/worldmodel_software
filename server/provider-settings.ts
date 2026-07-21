@@ -1,6 +1,23 @@
-import { getRuntimeEnv } from "./runtime-env.ts";
+import { getRuntimeEnv, isLocalDevelopmentEnvironment } from "./runtime-env.ts";
 
 export type ProviderInput = { composioApiKey?: string; composioGithubAuthConfigId?: string; githubAppSlug?: string; githubAppId?: string; githubClientId?: string; githubClientSecret?: string; githubPrivateKey?: string; openaiApiKey?: string; openaiModel?: string };
+
+export type ProviderSettingsMode = {
+  editable: boolean;
+  source: "local_encrypted_store" | "deployment_environment";
+};
+
+export function providerSettingsModeForEnvironment(env: Record<string, unknown>): ProviderSettingsMode {
+  const editable = isLocalDevelopmentEnvironment(env);
+  return {
+    editable,
+    source: editable ? "local_encrypted_store" : "deployment_environment",
+  };
+}
+
+export async function providerSettingsMode() {
+  return providerSettingsModeForEnvironment(await getRuntimeEnv());
+}
 
 async function key(secret: string) { const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret)); return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]); }
 function encode(value: Uint8Array) { return btoa(Array.from(value, (byte) => String.fromCharCode(byte)).join("")); }
@@ -10,7 +27,7 @@ async function decrypt(value: string, secret: string) { const payload = JSON.par
 
 async function context() {
   const env = await getRuntimeEnv();
-  if (env.LOCAL_DEVELOPMENT !== "true") throw new Error("Provider credentials must be configured as encrypted platform secrets outside local development");
+  if (!providerSettingsModeForEnvironment(env).editable) throw new Error("Provider credentials must be configured as deployment environment variables outside local development");
   if (!env.DB) throw new Error("Provider settings storage is unavailable");
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS local_provider_settings (id TEXT PRIMARY KEY, encrypted_json TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
   return { db: env.DB, secret: String(env.WORLDMODEL_LOCAL_SETTINGS_KEY || "worldmodel-local-provider-settings-v1") };

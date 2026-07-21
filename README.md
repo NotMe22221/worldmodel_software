@@ -5,12 +5,11 @@ A self-serve reliability platform for TypeScript systems. A customer connects a 
 ## Product architecture
 
 - Project-centered routes for model review, environment approval, journeys, persistent AI, campaigns, live replay, repair tournaments, and reports.
-- Cloudflare Workflows own scans, campaigns, cancellation checkpoints, repair tournaments, retries, and durable state transitions.
-- Cloudflare Sandbox SDK containers clone the approved commit, install with bounded commands, start services, run health checks and Playwright journeys, record baseline/failure measurements, and destroy the environment before signing evidence.
-- Durable Objects provide hibernating WebSocket fanout while D1 preserves ordered events for refresh-safe replay.
-- R2 stores redacted, hash-addressed raw artifacts with 30-day expiration metadata.
-- OpenAI Responses uses a strict `draft_campaign` function call, persistent response state, and recorded model, response, prompt version, usage, tool arguments, validation, and approval state.
-- GitHub Actions fallback uses GitHub OIDC and short-lived run tokens. No permanent WorldModel repository secret is generated.
+- Vercel runs the native Next.js application while Turso/libSQL persists workspace data, ordered run events, and bounded evidence artifacts.
+- GitHub Actions is the only supported customer execution backend. The generated workflow uses GitHub OIDC and short-lived run tokens; no permanent WorldModel repository secret is generated.
+- Automatic campaign dispatch requires a compatible external campaign orchestrator and runner adapter. Those adapters are not bundled, so production readiness fails closed until they are connected.
+- Run replay uses authenticated HTTP polling over persisted events instead of a provider-specific live-event service.
+- OpenAI Responses uses a strict `draft_campaign` function call with provider-side response storage disabled by default, while WorldModel records the model, response ID, prompt version, usage, tool arguments, validation, and approval state in its own durable database.
 - Deterministic server validators—not model prose—gate manifests, scenarios, campaign limits, evidence promotion, candidate scores, report approval, sharing, and draft PR publication.
 
 Customer metrics are labeled observed only after a configured runner submits a matching scenario fingerprint and seed plus teardown attestation. Missing providers fail closed with an actionable configuration state.
@@ -19,7 +18,7 @@ Customer metrics are labeled observed only after a configured runner submits a m
 
 - Public SaaS landing page with real registration and sign-in entry points
 - PBKDF2-hashed credentials, revocable HTTP-only sessions, protected application routes, and empty customer workspace provisioning
-- Owner-only encrypted local provider configuration for GitHub App and OpenAI credentials; production uses platform secrets
+- Owner-only encrypted local provider configuration for Composio GitHub OAuth and OpenAI credentials; production uses Vercel environment secrets
 - Exact-commit TypeScript repository modeling with evidence-linked components and dependencies
 - Editable project graph, disposable-environment manifest, and baseline health gates
 - Traffic spike, database slowdown, and payment outage scenarios
@@ -40,7 +39,7 @@ Customer metrics are labeled observed only after a configured runner submits a m
 - Customer activation and operator conversion KPIs that count modeled planning runs separately and require observed evidence for the verification milestone
 - Installation-token GitHub tree scanning that persists an evidence-linked component graph, mapping summary, truncation disclosure, and scan timestamp for each verified project
 - Durable scenario fingerprints, replay evidence, metered simulation minutes, and tenant-isolated report downloads
-- GitHub App install/OAuth ownership validation, installation-scoped repository sync, and repository import
+- Hosted Composio GitHub OAuth, workspace-bound one-time state, scoped repository sync/import, and exact-commit provenance; a custom GitHub App remains an advanced fallback
 - Stripe-hosted subscription checkout with signed, idempotent entitlement webhooks
 - Stripe-hosted customer portal sessions for owner/admin self-service payment methods, invoices, subscription changes, and cancellation
 - Deny-by-default internal operator console for tenant health, commercial lifecycle, usage, and audited cross-tenant support operations without workspace impersonation
@@ -61,9 +60,9 @@ npm install
 npm run dev
 ```
 
-Open the URL printed by the dev server and create an account. New accounts begin with no prepared projects, runs, or reports. Local owners can configure a GitHub App and OpenAI key at `/settings/providers`; credentials are encrypted before storage and never returned by the API.
+Open the URL printed by the dev server and create an account. New accounts begin with no prepared projects, runs, or reports. Local owners can configure a Composio project key, GitHub auth config, and optional OpenAI key at `/settings/providers`; credentials are encrypted before storage and never returned by the API.
 
-Validate with `npm test`, `npm run lint`, and `npm run typecheck:worker`.
+Validate with `npm test` and `npm run lint`.
 
 ## Vercel deployment
 
@@ -74,8 +73,8 @@ steps in [`docs/VERCEL.md`](docs/VERCEL.md) before promoting a deployment.
 
 ## Production integrations
 
-Copy the keys from `.env.example` into the production environment rather than committing secrets. Configure the GitHub App setup URL as `/api/integrations/github/setup` and its OAuth callback as `/api/integrations/github/callback`. Grant repository **Contents: write** and **Pull requests: write** only if verified draft-PR publication is enabled. GitHub Actions callbacks exchange a repository/branch-bound OIDC assertion at `/api/v1/runner/token`; evidence is accepted once at `/api/v1/runner/evidence` with an expiring token.
+Copy the keys from `.env.example` into the production environment rather than committing secrets. Set `COMPOSIO_API_KEY`, `COMPOSIO_GITHUB_AUTH_CONFIG_ID`, and the canonical `WORLDMODEL_PUBLIC_ORIGIN`; Composio hosts GitHub consent and returns to `/api/integrations/composio/github/callback`. Request repository write permissions only when approved draft-PR publication is enabled. The custom GitHub App routes are an advanced fallback, not the primary connection shown to customers. GitHub Actions callbacks exchange a repository/branch-bound OIDC assertion at `/api/v1/runner/token`; evidence is accepted once at `/api/v1/runner/evidence` with an expiring token.
 
-Deploy the Sandbox container from `Dockerfile.worldmodel`, create the D1/R2/Workflow/Durable Object bindings in `vite.config.ts`, set `OPENAI_API_KEY`, `RUNNER_EVIDENCE_SECRET`, and `RUNNER_TOKEN_SECRET`, and apply `drizzle/0017_living_worldmodel.sql`. Readiness stays closed unless the AI, event hub, artifacts, campaign workflow, and at least one signed execution backend are present.
+Deploy the native Next.js application to Vercel, connect Turso, set `OPENAI_API_KEY` and `RUNNER_TOKEN_SECRET` when those features are enabled, and apply the registered migrations through `drizzle/0019_isolate_github_workspaces.sql` in numeric order. Long-running execution is intentionally unavailable until a campaign orchestrator and GitHub Actions runner adapter are connected; the readiness screen reports that gap explicitly.
 
 Configure Stripe Checkout prices for Starter and Pro, activate and brand the Stripe customer portal, then register `/api/billing/webhook` for `checkout.session.completed` and `customer.subscription.*` lifecycle events. Subscription limits change only after a fresh, matching raw-body webhook signature is processed. Portal sessions are created on demand only for authenticated workspace owners/admins with a linked Stripe customer and return to the same WorldModel origin.

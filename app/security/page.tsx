@@ -107,8 +107,9 @@ export default function SecurityPage() {
       <PolicySection title="Simulation and change safety">
         <ul>
           <li>
-            The prepared virtual environment blocks outbound network access and
-            uses external-service mocks.
+            WorldModel validates a bounded execution manifest before approval.
+            The configured GitHub Actions runner remains responsible for
+            enforcing its network policy, isolation, and teardown.
           </li>
           <li>
             Failure scenarios preserve fingerprints and seeds for identical
@@ -126,10 +127,10 @@ export default function SecurityPage() {
           WorldModel has not completed an independent penetration test, SOC 2
           audit, formal business-continuity exercise, or published
           vulnerability-response SLA. The pilot should not be used to store
-          secrets or regulated data. External CI access also requires an
-          API-capable production ingress; the current Sites deployment remains
-          private. Report security concerns through the authenticated support
-          workflow.
+          secrets or regulated data. External CI evidence must not be enabled
+          until the public HTTPS callback, runner token secret, campaign
+          orchestrator, and GitHub Actions adapter are configured and reviewed.
+          Report security concerns through the authenticated support workflow.
         </p>
       </PolicySection>
     </PolicyShell>

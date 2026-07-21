@@ -166,6 +166,11 @@ export function vercelRuntimeEnv(environment: NodeJS.ProcessEnv = process.env, c
   const database = new LibsqlDatabase(client, token);
   const runtime = {
     ...environment,
+    // Never let deployment variables opt a Vercel function into local-only
+    // credential editing, fixture routes, or ephemeral SQLite storage.
+    LOCAL_DEVELOPMENT: "false",
+    WORLDMODEL_LOCAL_RUNTIME: "false",
+    COMPOSIO_FIXTURE_MODE: "false",
     DB: database,
     ARTIFACTS: new LibsqlArtifactStore(database),
     VERCEL_RUNTIME: "true",

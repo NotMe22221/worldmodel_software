@@ -18,7 +18,7 @@ type RepairStatus =
 
 async function getD1() {
   const env = await getRuntimeEnv();
-  if (!env.DB) throw new Error("D1 binding DB is unavailable");
+  if (!env.DB) throw new Error("Durable database is unavailable");
   return env.DB;
 }
 
@@ -172,7 +172,7 @@ export async function prepareRepairPullRequest(
   const db = await getD1();
   const repository = await db
     .prepare(
-      "SELECT gr.repository_id, gr.installation_id, gi.permissions_json FROM github_repositories gr JOIN github_installations gi ON gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1",
+      "SELECT gr.repository_id, gr.installation_id, gi.permissions_json FROM github_workspace_repositories gr JOIN github_workspace_installations gi ON gi.workspace_id = gr.workspace_id AND gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1",
     )
     .bind(snapshot.workspace.id, repair.repository)
     .first<{
@@ -243,7 +243,7 @@ export async function publishRepairPullRequest(
   const db = await getD1();
   const repository = await db
     .prepare(
-      "SELECT gr.installation_id, gi.permissions_json FROM github_repositories gr JOIN github_installations gi ON gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1",
+      "SELECT gr.installation_id, gi.permissions_json FROM github_workspace_repositories gr JOIN github_workspace_installations gi ON gi.workspace_id = gr.workspace_id AND gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1",
     )
     .bind(snapshot.workspace.id, repair.repository)
     .first<{ installation_id: string; permissions_json: string }>();

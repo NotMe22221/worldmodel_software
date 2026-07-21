@@ -1,5 +1,5 @@
 import { getOperatorSnapshot, updateOperatorSupportCase } from "@/db/operator";
-import { requestIdentity } from "@/server/request-identity";
+import { requestUser } from "@/server/request-identity";
 
 function failure(error: unknown) {
   const message =
@@ -16,11 +16,11 @@ function failure(error: unknown) {
 }
 
 export async function GET(request: Request) {
-  const email = await requestIdentity(request);
-  if (!email)
+  const user = await requestUser(request);
+  if (!user)
     return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
-    return Response.json(await getOperatorSnapshot(email), {
+    return Response.json(await getOperatorSnapshot(user.email, user.id), {
       headers: { "cache-control": "private, no-store" },
     });
   } catch (error) {
@@ -29,8 +29,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const email = await requestIdentity(request);
-  if (!email)
+  const user = await requestUser(request);
+  if (!user)
     return Response.json({ error: "Authentication required" }, { status: 401 });
   let payload: {
     action?: string;
@@ -58,7 +58,8 @@ export async function POST(request: Request) {
   try {
     return Response.json({
       supportCase: await updateOperatorSupportCase(
-        email,
+        user.email,
+        user.id,
         payload.caseId,
         payload.status || "",
         payload.note || "",

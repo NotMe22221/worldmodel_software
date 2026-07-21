@@ -2,6 +2,8 @@ import { composioConfiguration } from "./runtime-config.ts";
 
 type JsonRecord = Record<string, unknown>;
 
+const COMPOSIO_REQUEST_TIMEOUT_MS = 20_000;
+
 export type ComposioConnectedAccount = {
   id: string;
   userId: string;
@@ -36,26 +38,51 @@ function nestedData(value: unknown) {
   return data === undefined ? root : data;
 }
 
+function isAbortFailure(error: unknown) {
+  const name = error && typeof error === "object" && "name" in error ? error.name : "";
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+async function withComposioDeadline<T>(callerSignal: AbortSignal | null | undefined, operation: (signal: AbortSignal) => Promise<T>) {
+  const timeoutSignal = AbortSignal.timeout(COMPOSIO_REQUEST_TIMEOUT_MS);
+  const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
+  try {
+    return await operation(signal);
+  } catch (error) {
+    if (timeoutSignal.aborted && (error === timeoutSignal.reason || isAbortFailure(error))) {
+      throw new Error("Composio request timed out");
+    }
+    throw error;
+  }
+}
+
 async function composioFetch(path: string, init?: RequestInit) {
   const config = await composioConfiguration();
-  const response = await fetch(`${config.baseUrl}${path}`, {
-    ...init,
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "x-api-key": config.apiKey,
-      ...init?.headers,
-    },
-    signal: init?.signal || AbortSignal.timeout(20_000),
+  return withComposioDeadline(init?.signal, async (signal) => {
+    const response = await fetch(`${config.baseUrl}${path}`, {
+      ...init,
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "x-api-key": config.apiKey,
+        ...init?.headers,
+      },
+      signal,
+    });
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      if (isAbortFailure(error)) throw error;
+    }
+    if (!response.ok) {
+      const root = record(payload);
+      const providerError = record(root.error);
+      const detail = (text(providerError.message) || text(root.message)).replace(/[\r\n]+/g, " ").slice(0, 240);
+      throw new Error(`Composio request failed with status ${response.status}${detail ? `: ${detail}` : ""}`);
+    }
+    return payload;
   });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    const root = record(payload);
-    const providerError = record(root.error);
-    const detail = (text(providerError.message) || text(root.message)).replace(/[\r\n]+/g, " ").slice(0, 240);
-    throw new Error(`Composio request failed with status ${response.status}${detail ? `: ${detail}` : ""}`);
-  }
-  return payload;
 }
 
 function validateConnectUrl(value: unknown, baseUrl: string, fixtureMode: boolean) {

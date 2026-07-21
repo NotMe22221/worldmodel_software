@@ -8,7 +8,7 @@ async function configuration() {
   const values = await effectiveRuntimeEnvironment() as RuntimeEnvironment;
   const apiKey = values.OPENAI_API_KEY?.trim();
   if (!apiKey) throw new Error("ai_not_configured: The project assistant is unavailable until OPENAI_API_KEY is configured");
-  return { apiKey, model: values.OPENAI_AGENT_MODEL?.trim() || "gpt-5.6" };
+  return { apiKey, model: values.OPENAI_AGENT_MODEL?.trim() || "gpt-5.6", storeResponses: values.OPENAI_STORE_RESPONSES === "true" };
 }
 
 export async function draftCampaignWithOpenAI(input: { message: string; project: Record<string, unknown>; model: Record<string, unknown> | null; environment: Record<string, unknown> | null; journeys: Array<Record<string, unknown>>; previousResponseId?: string | null }): Promise<{ responseId: string; model: string; plan: CampaignPlan; summary: string; usage: Record<string, unknown>; toolCall: { id: string; name: string; arguments: string } }> {
@@ -36,11 +36,12 @@ export async function draftCampaignWithOpenAI(input: { message: string; project:
   };
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
+    signal: AbortSignal.timeout(30_000),
     headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },
     body: JSON.stringify({
       model: config.model,
-      store: true,
-      previous_response_id: input.previousResponseId || undefined,
+      store: config.storeResponses,
+      previous_response_id: config.storeResponses ? input.previousResponseId || undefined : undefined,
       input: [{ role: "developer", content: [{ type: "input_text", text: "You are the WorldModel Scenario Copilot. Produce only a bounded, evidence-aware campaign. Never claim a run happened. Use only supplied model node IDs, environment revision, and journey IDs. Maximum 20 scenarios and concurrency 3." }] }, { role: "user", content: [{ type: "input_text", text: JSON.stringify(input) }] }],
       tools: [{ type: "function", name: "draft_campaign", description: "Return an editable, bounded reliability campaign for deterministic server validation.", strict: true, parameters: schema }],
       tool_choice: { type: "function", name: "draft_campaign" },

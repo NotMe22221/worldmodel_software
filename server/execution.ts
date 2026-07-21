@@ -24,14 +24,14 @@ export async function dispatchCampaign(input: { campaignId: string; workspaceId:
   const env = await runtime();
   const readiness = evaluateCampaignExecutionReadiness(env, input.backend);
   if (!readiness.ready) throw new Error(`${readiness.code}: ${readiness.message}`);
-  const workflow = env.WORLDMODEL_CAMPAIGN as WorkflowBinding;
+  const workflow = env.CAMPAIGN_ORCHESTRATOR as WorkflowBinding;
   const instance = await workflow.create({ id: input.campaignId, params: input as unknown as Record<string, unknown> });
   return { workflowId: instance.id, backend: input.backend };
 }
 
 export async function dispatchScan(input: { scanId: string; workspaceId: string; projectId: string; repository: string; branch: string; repositorySource: RepositorySource; commitSha?: string }) {
   const env = await runtime();
-  const workflow = env.WORLDMODEL_SCAN as WorkflowBinding | undefined;
+  const workflow = env.REPOSITORY_SCAN_ORCHESTRATOR as WorkflowBinding | undefined;
   if (!workflow?.create) throw new Error("runner_not_configured: Durable repository scanning is not configured for this deployment");
   const instance = await workflow.create({ id: input.scanId, params: input });
   return { workflowId: instance.id };
@@ -39,7 +39,7 @@ export async function dispatchScan(input: { scanId: string; workspaceId: string;
 
 export async function dispatchRepair(input: { investigationId: string; workspaceId: string; projectId: string; runId: string; objective: string }) {
   const env = await runtime();
-  const workflow = env.WORLDMODEL_REPAIR as WorkflowBinding | undefined;
+  const workflow = env.REPAIR_ORCHESTRATOR as WorkflowBinding | undefined;
   if (!workflow?.create) throw new Error("runner_not_configured: Durable repair execution is not configured for this deployment");
   const instance = await workflow.create({ id: input.investigationId, params: input });
   return { workflowId: instance.id };

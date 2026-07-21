@@ -1,4 +1,4 @@
-import { getRuntimeEnv } from "@/server/runtime-env";
+import { getRuntimeEnv, isLocalDevelopmentEnvironment } from "@/server/runtime-env";
 
 type Context = { params: Promise<{ path: string[] }> };
 type JsonRecord = Record<string, unknown>;
@@ -6,7 +6,7 @@ const FIXTURE_SHA = "5f7d1f6d9b8ab313f29d73f6054f27a0d2d7e9b1";
 
 async function fixtureMode() {
   const env = await getRuntimeEnv();
-  return env.LOCAL_DEVELOPMENT === "true" && env.COMPOSIO_FIXTURE_MODE === "true";
+  return isLocalDevelopmentEnvironment(env) && env.COMPOSIO_FIXTURE_MODE === "true";
 }
 
 async function enabled(request: Request) {

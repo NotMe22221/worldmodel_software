@@ -3,8 +3,10 @@ import "./globals.css";
 import "./warm-theme.css";
 import "./premium.css";
 
+const publicOrigin = process.env.WORLDMODEL_PUBLIC_ORIGIN || "https://worldmodel-software.vercel.app";
+
 export const metadata: Metadata = {
-  metadataBase: new URL("https://worldmodel-software.karthikuppala.chatgpt.site"),
+  metadataBase: new URL(publicOrigin),
   title: "WorldModel for Software — Verified resilience engineering",
   description: "Map your software, simulate production failures safely, and verify repairs before your users are affected.",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },

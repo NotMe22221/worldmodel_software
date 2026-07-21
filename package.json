@@ -7,20 +7,16 @@
   },
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 3100",
-    "dev:cloudflare": "vinext dev",
-    "build": "vinext build",
-    "build:vercel": "node scripts/check-vercel-env.mjs && next build",
-    "build:local": "next build",
-    "start": "vinext start",
+    "build": "next build --webpack",
+    "build:vercel": "node scripts/check-vercel-env.mjs && next build --webpack",
+    "build:local": "next build --webpack",
+    "start": "next start",
     "test": "npm run build:local && npm run test:unit",
-    "test:cloudflare": "npm run build && node --test tests/*.test.mjs sample-app/tests/*.spec.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "typecheck:worker": "tsc -p tsconfig.worker.json --pretty false",
-    "test:unit": "node --test tests/auth.test.mjs tests/composio.test.mjs tests/product-contracts.test.mjs tests/vercel-runtime.test.mjs tests/worldmodel-engine.test.mjs tests/virtual-environment.test.mjs sample-app/tests/*.spec.mjs",
+    "test:unit": "node --test tests/auth.test.mjs tests/composio.test.mjs tests/product-contracts.test.mjs tests/vercel-runtime.test.mjs tests/workspace-onboarding.test.mjs tests/worldmodel-engine.test.mjs tests/virtual-environment.test.mjs sample-app/tests/*.spec.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "^0.12.3",
     "@libsql/client": "^0.17.4",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
@@ -28,23 +24,19 @@
     "react-dom": "19.2.6"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
-    "@cloudflare/workers-types": "^4.20260702.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
-    "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
-    "typescript": "5.9.3",
-    "vinext": "0.0.50",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "postcss": "8.5.14",
+    "ws": "8.21.0"
   },
   "type": "module"
 }

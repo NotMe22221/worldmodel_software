@@ -7,11 +7,11 @@ import { getRuntimeEnv } from "@/server/runtime-env";
 import { getComposioGithubCommit, publishComposioGithubDraftFiles, type RepositorySource } from "@/server/composio";
 import { validateCampaign, validateJourney, validateManifest, type CampaignPlan, type JourneyDefinition, type WorldModelManifest } from "@/worldmodel/product-contracts";
 
-async function d1() { const db = (await getRuntimeEnv() as { DB?: D1Database }).DB; if (!db) throw new Error("database_unavailable: D1 binding DB is unavailable"); return db; }
+async function runtimeDb() { const db = (await getRuntimeEnv()).DB; if (!db) throw new Error("database_unavailable: Durable database is unavailable"); return db; }
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 
 export async function ensureProductSchema() {
-  const db = await d1();
+  const db = await runtimeDb();
   await db.batch([
     db.prepare("CREATE TABLE IF NOT EXISTS model_versions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, project_id TEXT NOT NULL, commit_sha TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', graph_json TEXT NOT NULL DEFAULT '{\"nodes\":[],\"edges\":[]}', confidence INTEGER NOT NULL DEFAULT 0, scan_version TEXT NOT NULL DEFAULT 'wm-ts-1', user_overrides_json TEXT NOT NULL DEFAULT '{}', approved_by TEXT, approved_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS model_versions_project_idx ON model_versions(workspace_id, project_id, created_at)"),
@@ -43,7 +43,7 @@ async function context(email: string, projectId: string, write = false) {
   await ensureProductSchema();
   const snapshot = await getSaasSnapshot(email);
   if (write) { requireRole(snapshot, ["owner", "admin", "member"]); requireWriteEntitlement(snapshot.entitlements); }
-  const db = await d1();
+  const db = await runtimeDb();
   const project = await db.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(projectId, snapshot.workspace.id).first<Record<string, unknown>>();
   if (!project) throw new Error("project_not_found: Project was not found in this workspace");
   return { db, snapshot, project, workspaceId: String(snapshot.workspace.id) };
@@ -59,7 +59,7 @@ export async function productSnapshot(email: string, projectId: string) {
     db.prepare("SELECT * FROM agent_conversations WHERE workspace_id = ? AND project_id = ? ORDER BY updated_at DESC LIMIT 20").bind(workspaceId, projectId).all(),
     db.prepare("SELECT * FROM campaigns WHERE workspace_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 50").bind(workspaceId, projectId).all(),
     db.prepare("SELECT cr.* FROM campaign_runs cr JOIN campaigns c ON c.id = cr.campaign_id WHERE cr.workspace_id = ? AND cr.project_id = ? ORDER BY cr.created_at DESC LIMIT 200").bind(workspaceId, projectId).all(),
-    db.prepare("SELECT * FROM simulation_runs WHERE project_id = ? AND evidence_kind = 'observed' ORDER BY created_at DESC LIMIT 50").bind(projectId).all(),
+    db.prepare("SELECT r.* FROM simulation_runs r JOIN projects p ON p.id = r.project_id WHERE r.project_id = ? AND p.workspace_id = ? AND r.status = 'verified' AND r.evidence_kind = 'observed' ORDER BY r.created_at DESC LIMIT 50").bind(projectId, workspaceId).all(),
     db.prepare("SELECT * FROM investigations WHERE workspace_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 20").bind(workspaceId, projectId).all(),
     db.prepare("SELECT pc.* FROM patch_candidates pc JOIN investigations i ON i.id = pc.investigation_id WHERE pc.workspace_id = ? AND i.project_id = ? ORDER BY pc.created_at DESC LIMIT 60").bind(workspaceId, projectId).all(),
     db.prepare("SELECT * FROM decision_reports WHERE workspace_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 20").bind(workspaceId, projectId).all(),
@@ -73,7 +73,7 @@ export async function rescanRepository(email: string, projectId: string) {
   const { db, workspaceId, project } = await context(email, projectId, true);
   const [composio, githubApp] = await Promise.all([
     db.prepare("SELECT c.connected_account_id, c.composio_user_id FROM composio_github_repositories r JOIN composio_connections c ON c.id = r.connection_id AND c.workspace_id = r.workspace_id WHERE r.workspace_id = ? AND lower(r.full_name) = lower(?) AND c.status = 'active' LIMIT 1").bind(workspaceId, String(project.repository)).first<Record<string, unknown>>(),
-    db.prepare("SELECT gr.installation_id FROM github_repositories gr JOIN github_installations gi ON gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1").bind(workspaceId, String(project.repository)).first<Record<string, unknown>>(),
+    db.prepare("SELECT gr.installation_id FROM github_workspace_repositories gr JOIN github_workspace_installations gi ON gi.workspace_id = gr.workspace_id AND gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1").bind(workspaceId, String(project.repository)).first<Record<string, unknown>>(),
   ]);
   if (project.repository_verified !== 1 || (!composio?.connected_account_id && !githubApp?.installation_id)) throw new Error("repository_not_connected: Reconnect this repository through Composio or the fallback GitHub App");
   let repositorySource: RepositorySource;
@@ -114,7 +114,7 @@ export async function approveModelVersion(email: string, projectId: string, mode
 export async function saveEnvironment(email: string, projectId: string, input: { modelVersionId: string; backend: string; manifest: unknown; approve?: boolean }) {
   const { db, workspaceId } = await context(email, projectId, true);
   const manifest = validateManifest(input.manifest);
-  if (!["cloudflare_sandbox", "github_actions"].includes(input.backend)) throw new Error("environment_invalid: Choose a supported execution backend");
+  if (input.backend !== "github_actions") throw new Error("environment_invalid: GitHub Actions is the supported execution backend");
   const model = await db.prepare("SELECT id FROM model_versions WHERE id = ? AND workspace_id = ? AND project_id = ?").bind(input.modelVersionId, workspaceId, projectId).first();
   if (!model) throw new Error("model_not_found: Approve a model version first");
   const environmentId = id("env");
@@ -170,7 +170,7 @@ export async function approveCampaign(email: string, projectId: string, campaign
   if (!executionBasis?.commit_sha || !/^[a-f0-9]{40}$/i.test(String(executionBasis.commit_sha))) throw new Error("project_not_ready: An exact 40-character commit basis is required");
   const [composio, githubApp] = await Promise.all([
     db.prepare("SELECT c.connected_account_id, c.composio_user_id FROM composio_github_repositories r JOIN composio_connections c ON c.id = r.connection_id AND c.workspace_id = r.workspace_id WHERE r.workspace_id = ? AND lower(r.full_name) = lower(?) AND c.status = 'active' LIMIT 1").bind(workspaceId, String(executionBasis.repository)).first<Record<string, unknown>>(),
-    db.prepare("SELECT gr.installation_id FROM github_repositories gr JOIN github_installations gi ON gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1").bind(workspaceId, String(executionBasis.repository)).first<Record<string, unknown>>(),
+    db.prepare("SELECT gr.installation_id FROM github_workspace_repositories gr JOIN github_workspace_installations gi ON gi.workspace_id = gr.workspace_id AND gi.installation_id = gr.installation_id WHERE gr.workspace_id = ? AND lower(gr.full_name) = lower(?) AND gi.status = 'active' LIMIT 1").bind(workspaceId, String(executionBasis.repository)).first<Record<string, unknown>>(),
   ]);
   const repositorySource: RepositorySource = composio?.connected_account_id && composio.composio_user_id
     ? { kind: "composio", connectedAccountId: String(composio.connected_account_id), composioUserId: String(composio.composio_user_id) }
@@ -216,7 +216,7 @@ export async function startInvestigation(email: string, projectId: string, input
   const { db, workspaceId } = await context(email, projectId, true);
   if (!input.objective.trim() || input.objective.length > 120) throw new Error("investigation_invalid: Choose a repair objective");
   const run = await db.prepare("SELECT id, status, evidence_kind FROM simulation_runs WHERE id = ? AND project_id = ?").bind(input.runId, projectId).first<Record<string, unknown>>();
-  if (!run || run.evidence_kind !== "observed") throw new Error("run_not_found: An observed customer run is required");
+  if (!run || run.status !== "verified" || run.evidence_kind !== "observed") throw new Error("run_not_found: A verified observed customer run is required");
   const investigationId = id("investigation");
   await db.prepare("INSERT INTO investigations (id, workspace_id, project_id, run_id, status, objective, workflow_id, created_by) VALUES (?, ?, ?, ?, 'dispatching', ?, ?, ?)").bind(investigationId, workspaceId, projectId, input.runId, input.objective.trim(), investigationId, email).run();
   try {
@@ -263,10 +263,10 @@ export async function publishDecisionDraftPr(email: string, projectId: string, r
   if (!row) throw new Error("report_not_found: Approve a verified report before publishing a draft pull request");
   const [composio, githubApp] = await Promise.all([
     db.prepare("SELECT c.connected_account_id FROM composio_github_repositories r JOIN composio_connections c ON c.id=r.connection_id AND c.workspace_id=r.workspace_id WHERE r.workspace_id=? AND lower(r.full_name)=lower(?) AND c.status='active' LIMIT 1").bind(workspaceId, String(project.repository)).first<Record<string, unknown>>(),
-    db.prepare("SELECT gr.installation_id, gi.permissions_json FROM github_repositories gr JOIN github_installations gi ON gi.installation_id=gr.installation_id AND gi.workspace_id=gr.workspace_id WHERE gr.workspace_id=? AND lower(gr.full_name)=lower(?) AND gi.status='active' LIMIT 1").bind(workspaceId, String(project.repository)).first<Record<string, unknown>>(),
+    db.prepare("SELECT gr.installation_id, gi.permissions_json FROM github_workspace_repositories gr JOIN github_workspace_installations gi ON gi.installation_id=gr.installation_id AND gi.workspace_id=gr.workspace_id WHERE gr.workspace_id=? AND lower(gr.full_name)=lower(?) AND gi.status='active' LIMIT 1").bind(workspaceId, String(project.repository)).first<Record<string, unknown>>(),
   ]);
   if (!composio?.connected_account_id && !githubApp?.installation_id) throw new Error("repository_not_connected: Reconnect this repository through Composio or the fallback GitHub App");
-  const bucket = (await getRuntimeEnv() as unknown as { ARTIFACTS?: R2Bucket }).ARTIFACTS; if (!bucket) throw new Error("artifacts_not_configured: R2 artifacts are unavailable");
+  const bucket = (await getRuntimeEnv()).ARTIFACTS; if (!bucket) throw new Error("artifacts_not_configured: Durable artifact storage is unavailable");
   const object = await bucket.get(String(row.r2_key)); if (!object) throw new Error("artifact_not_found: Verified candidate artifact expired or is unavailable"); const evidence = JSON.parse(await object.text()) as { files?: Array<{ path: string; content: string }>; commitSha?: string; strategy?: string };
   if (!evidence.files?.length || !evidence.commitSha) throw new Error("candidate_invalid: Candidate does not contain bounded publishable files");
   const [owner, repository] = String(project.repository).split("/"); if (!owner || !repository) throw new Error("repository_invalid: GitHub repository name is invalid"); const branch = `worldmodel/${reportId.replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`;
@@ -286,7 +286,7 @@ export async function publishDecisionDraftPr(email: string, projectId: string, r
 }
 
 export async function sharedDecisionReport(token: string) {
-  if (!/^wmshare_[a-f0-9]{64}$/i.test(token)) throw new Error("report_not_found: Shared report was not found"); const db = await d1(); await ensureProductSchema();
+  if (!/^wmshare_[a-f0-9]{64}$/i.test(token)) throw new Error("report_not_found: Shared report was not found"); const db = await runtimeDb(); await ensureProductSchema();
   const report = await db.prepare("SELECT id, report_json, created_at FROM decision_reports WHERE share_token_hash=? AND visibility='shared' AND status IN ('ready','approved') LIMIT 1").bind(await tokenHash(token)).first<Record<string, unknown>>(); if (!report) throw new Error("report_not_found: Shared report was not found");
   return { id: report.id, report: JSON.parse(String(report.report_json)), createdAt: report.created_at, readOnly: true };
 }

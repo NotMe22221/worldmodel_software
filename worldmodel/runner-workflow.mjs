@@ -4,7 +4,8 @@ export function generateRunnerWorkflow({ projectId, apiOrigin }) {
   try { origin = new URL(apiOrigin); } catch { throw new Error("API origin is invalid"); }
   if (origin.origin !== apiOrigin || (origin.protocol !== "https:" && origin.hostname !== "localhost")) throw new Error("API origin is invalid");
   const audience = encodeURIComponent(`${origin.origin}/api/v1/runner/token`);
-  return `name: WorldModel observed resilience run
+  return `# Install at .github/workflows/worldmodel-${projectId}.yml; the signed runner identity is bound to this exact path.
+name: WorldModel observed resilience run
 
 on:
   workflow_dispatch:

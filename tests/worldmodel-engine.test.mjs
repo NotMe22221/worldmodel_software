@@ -47,7 +47,8 @@ import {
   githubEvidencePath,
   githubRepositoryParts,
 } from "../worldmodel/github-pr-contract.mjs";
-import { parseOperatorEmails } from "../server/runtime-config.ts";
+import { parseOperatorEmails, parseOperatorUserIds } from "../server/runtime-config.ts";
+import { expectedRunnerWorkflowRef, runnerOidcClaimsMatch } from "../server/github-oidc.ts";
 
 test("repository scanner detects seven evidenced components", async () => {
   const manifest = JSON.parse(
@@ -269,6 +270,18 @@ test("observed runner evidence requires a bounded destroyed environment attestat
   );
 });
 
+test("GitHub runner identity is bound to the generated workflow, branch, and dispatch event", () => {
+  const input = { repository: "northstar/checkout-api", branch: "main", projectId: "proj_verified_123" };
+  const workflowRef = expectedRunnerWorkflowRef(input.repository, input.branch, input.projectId);
+  assert.equal(workflowRef, "northstar/checkout-api/.github/workflows/worldmodel-proj_verified_123.yml@refs/heads/main");
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef, event_name: "workflow_dispatch" }, input), true);
+  assert.equal(runnerOidcClaimsMatch({ repository: "northstar/other-api", ref: "refs/heads/main", workflow_ref: workflowRef, event_name: "workflow_dispatch" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/release", workflow_ref: workflowRef, event_name: "workflow_dispatch" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef.replace("worldmodel-", "other-"), event_name: "workflow_dispatch" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", workflow_ref: workflowRef, event_name: "push" }, input), false);
+  assert.equal(runnerOidcClaimsMatch({ repository: input.repository, ref: "refs/heads/main", event_name: "workflow_dispatch" }, input), false);
+});
+
 test("runner workflow is tenant-project bound and contains no embedded secret", () => {
   const workflow = generateRunnerWorkflow({
     projectId: "proj_verified_123",
@@ -331,11 +344,21 @@ test("GitHub tree scanner builds an evidence-linked component graph", () => {
 test("GitHub tree fetch uses installation credentials and bounded tree entries", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    let request;
+    const commitSha = "a".repeat(40);
+    const treeSha = "b".repeat(40);
+    const requests = [];
     globalThis.fetch = async (url, init) => {
-      request = { url: String(url), init };
+      const request = { url: String(url), init };
+      requests.push(request);
+      if (request.url.includes("/git/ref/heads/main")) {
+        return Response.json({ object: { sha: commitSha } });
+      }
+      if (request.url.includes(`/git/commits/${commitSha}`)) {
+        return Response.json({ sha: commitSha, tree: { sha: treeSha } });
+      }
       return new Response(
         JSON.stringify({
+          sha: treeSha,
           truncated: false,
           tree: [
             { path: "package.json", type: "blob" },
@@ -351,11 +374,37 @@ test("GitHub tree fetch uses installation credentials and bounded tree entries",
       "main",
       "installation-token",
     );
-    assert.match(request.url, /repos\/acme\/store\/git\/trees\/main\?recursive=1/);
-    assert.equal(request.init.headers.authorization, "Bearer installation-token");
+    assert.match(requests[0].url, /repos\/acme\/store\/git\/ref\/heads\/main$/);
+    assert.match(requests[1].url, new RegExp(`/repos/acme/store/git/commits/${commitSha}$`));
+    assert.match(requests[2].url, new RegExp(`/repos/acme/store/git/trees/${treeSha}\\?recursive=1$`));
+    assert.equal(tree.commitSha, commitSha, "the immutable commit SHA must not be replaced by the tree SHA");
+    assert.notEqual(tree.commitSha, treeSha);
+    assert.ok(requests.every((request) => request.init.signal instanceof AbortSignal));
+    assert.ok(requests.every((request) => request.init.headers.authorization === "Bearer installation-token"));
     assert.deepEqual(tree.entries.map((entry) => entry.path), ["package.json", "src"]);
     assert.equal(tree.truncated, false);
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GitHub provider requests use a bounded deadline and return a safe timeout error", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalTimeout = AbortSignal.timeout;
+  let receivedSignal;
+  try {
+    AbortSignal.timeout = () => AbortSignal.abort(new DOMException("fixture deadline", "TimeoutError"));
+    globalThis.fetch = async (_url, init = {}) => {
+      receivedSignal = init.signal;
+      throw receivedSignal.reason;
+    };
+    await assert.rejects(
+      repositoryTreeWithToken("acme/store", "main", "installation-token"),
+      { message: "GitHub request timed out" },
+    );
+    assert.equal(receivedSignal.aborted, true);
+  } finally {
+    AbortSignal.timeout = originalTimeout;
     globalThis.fetch = originalFetch;
   }
 });
@@ -443,6 +492,31 @@ test("Stripe billing portal uses a short-lived hosted session and rejects untrus
   }
 });
 
+test("Stripe provider requests use a bounded deadline and return a safe timeout error", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalTimeout = AbortSignal.timeout;
+  let receivedSignal;
+  try {
+    AbortSignal.timeout = () => AbortSignal.abort(new DOMException("fixture deadline", "TimeoutError"));
+    globalThis.fetch = async (_url, init = {}) => {
+      receivedSignal = init.signal;
+      throw receivedSignal.reason;
+    };
+    await assert.rejects(
+      createStripePortalWithKey({
+        customerId: "cus_verified",
+        origin: "https://worldmodel.example",
+        secretKey: "sk_test_secret",
+      }),
+      { message: "Stripe request timed out" },
+    );
+    assert.equal(receivedSignal.aborted, true);
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("GitHub connection accepts only an installation visible to the authorized user", () => {
   const installations = [
     {
@@ -468,9 +542,9 @@ test("audit CSV export neutralizes spreadsheet formulas and escapes quotes", () 
 });
 
 test("commercial launch gate is derived from live state and owner attestations", () => {
-  const baseline = launchReadiness({
+  const baselineInput = {
     projects: [{}],
-    runs: [{ status: "verified" }],
+    runs: [{ status: "verified", evidence_kind: "observed" }],
     githubInstallations: [],
     subscription: null,
     auditAccess: false,
@@ -500,7 +574,8 @@ test("commercial launch gate is derived from live state and owner attestations",
       github: { configured: false },
       billing: { configured: false },
     },
-  });
+  };
+  const baseline = launchReadiness(baselineInput);
   assert.equal(baseline.passed, 8);
   assert.equal(baseline.total, 12);
   assert.equal(baseline.ready, false);
@@ -508,10 +583,18 @@ test("commercial launch gate is derived from live state and owner attestations",
     baseline.checks.find((check) => check.key === "github_live").evidence,
     /credentials are missing/,
   );
+  for (const runs of [
+    [{ status: "verified", evidence_kind: "modeled" }],
+    [{ status: "running", evidence_kind: "observed" }],
+  ]) {
+    const evidenceMismatch = launchReadiness({ ...baselineInput, runs });
+    assert.equal(evidenceMismatch.checks.find((check) => check.key === "verified_replay").passed, false);
+    assert.equal(evidenceMismatch.passed, baseline.passed - 1);
+  }
 
   const ready = launchReadiness({
     projects: [{}],
-    runs: [{ status: "verified" }],
+    runs: [{ status: "verified", evidence_kind: "observed" }],
     githubInstallations: [{}],
     subscription: { status: "active" },
     auditAccess: true,
@@ -526,11 +609,30 @@ test("commercial launch gate is derived from live state and owner attestations",
       github: { configured: true },
       billing: { configured: true },
       intelligence: { configured: true },
-      execution: { campaignWorkflow: true, eventHub: true, artifacts: true, sandboxRunner: true, githubActionsRunner: false },
+      execution: { campaignOrchestrator: true, artifacts: true, githubActionsRunner: true },
     },
   });
   assert.equal(ready.score, 100);
   assert.equal(ready.ready, true);
+});
+
+test("developer runs endpoint cannot accept self-attested observed or verified metrics", async () => {
+  const source = await readFile(new URL("../app/api/v1/runs/route.ts", import.meta.url), "utf8");
+  assert.match(source, /payload\.action === "observe" \|\| payload\.action === "verify"/);
+  assert.match(source, /code: "signed_runner_required"/);
+  assert.match(source, /createSimulationRunForWorkspace\(context\.workspaceId, context\.actor, scenario, payload\.projectId\)/);
+  assert.doesNotMatch(source, /normalizeObservedRun|ingestObservedRunForWorkspace/);
+});
+
+test("product and operator evidence consumers require verified observed runs", async () => {
+  const [productSource, operatorSource] = await Promise.all([
+    readFile(new URL("../db/product.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/operator.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(productSource, /WHERE r\.project_id = \? AND p\.workspace_id = \? AND r\.status = 'verified' AND r\.evidence_kind = 'observed'/);
+  assert.match(productSource, /!run \|\| run\.status !== "verified" \|\| run\.evidence_kind !== "observed"/);
+  const verifiedObservedCounters = operatorSource.match(/r\.status = 'verified' AND r\.evidence_kind = 'observed'/g) || [];
+  assert.ok(verifiedObservedCounters.length >= 3);
 });
 
 test("developer API credentials use one-time high-entropy material and irreversible stored digests", async () => {
@@ -732,6 +834,11 @@ test("operator access allowlist is explicit, normalized, and rejects malformed i
   );
   assert.deepEqual([...configured], ["owner@example.com", "ops@example.com"]);
   assert.equal(parseOperatorEmails(undefined).size, 0);
+  assert.deepEqual(
+    [...parseOperatorUserIds("usr_0123456789abcdef0123456789abcdef, invalid, usr_FEDCBA9876543210FEDCBA9876543210")],
+    ["usr_0123456789abcdef0123456789abcdef", "usr_FEDCBA9876543210FEDCBA9876543210"],
+  );
+  assert.equal(parseOperatorUserIds(undefined).size, 0);
 });
 
 test("commercial entitlements follow trial, paid, delinquent, and canceled lifecycle states", () => {

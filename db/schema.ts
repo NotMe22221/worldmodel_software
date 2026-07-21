@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const workspaces = sqliteTable("workspaces", {
   id: text("id").primaryKey(),
@@ -172,6 +172,45 @@ export const githubRepositories = sqliteTable("github_repositories", {
   selected: integer("selected", { mode: "boolean" }).notNull().default(false),
   syncedAt: text("synced_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+// Tenant-scoped replacements for the legacy GitHub App tables above. GitHub
+// installation and repository IDs are global identifiers, so neither is a
+// safe tenant boundary by itself. Keeping workspaceId in the primary and
+// foreign keys lets the same GitHub organization be connected to more than
+// one WorldModel workspace without either workspace moving the other's rows.
+export const githubWorkspaceInstallations = sqliteTable("github_workspace_installations", {
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  installationId: text("installation_id").notNull(),
+  accountLogin: text("account_login").notNull(),
+  accountType: text("account_type").notNull(),
+  repositorySelection: text("repository_selection").notNull(),
+  permissionsJson: text("permissions_json").notNull(),
+  status: text("status").notNull().default("active"),
+  connectedBy: text("connected_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.installationId] }),
+  index("github_workspace_installations_workspace_idx").on(table.workspaceId, table.status),
+]);
+
+export const githubWorkspaceRepositories = sqliteTable("github_workspace_repositories", {
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  repositoryId: text("repository_id").notNull(),
+  installationId: text("installation_id").notNull(),
+  fullName: text("full_name").notNull(),
+  defaultBranch: text("default_branch").notNull(),
+  isPrivate: integer("is_private", { mode: "boolean" }).notNull().default(true),
+  selected: integer("selected", { mode: "boolean" }).notNull().default(false),
+  syncedAt: text("synced_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.repositoryId] }),
+  foreignKey({
+    columns: [table.workspaceId, table.installationId],
+    foreignColumns: [githubWorkspaceInstallations.workspaceId, githubWorkspaceInstallations.installationId],
+  }),
+  index("github_workspace_repositories_workspace_idx").on(table.workspaceId, table.selected, table.fullName),
+]);
 
 export const composioConnectionAttempts = sqliteTable("composio_connection_attempts", {
   stateHash: text("state_hash").primaryKey(),
