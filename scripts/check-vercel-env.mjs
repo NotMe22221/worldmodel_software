@@ -1,10 +1,10 @@
-const storageVariables = ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_D1_DATABASE_ID", "CLOUDFLARE_D1_API_TOKEN"];
+const storageVariables = ["TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN"];
 
 if (process.env.VERCEL === "1") {
   const missingStorage = storageVariables.filter((key) => !process.env[key]?.trim());
   if (missingStorage.length) {
     console.warn(
-      `Vercel durable storage is not configured. Missing: ${missingStorage.join(", ")}. ` +
+      `Vercel Turso storage is not configured. Missing: ${missingStorage.join(", ")}. ` +
       "The build will continue so public pages can deploy; data-backed routes and /api/health remain unavailable until storage is configured.",
     );
   } else {

@@ -3,38 +3,61 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { vercelRuntimeEnv } from "../server/vercel-runtime.ts";
 
-function mockD1() {
+function result(columns = [], rows = [], rowsAffected = 0, lastInsertRowid) {
+  return { columns, columnTypes: columns.map(() => "TEXT"), rows, rowsAffected, lastInsertRowid, toJSON() { return this; } };
+}
+
+function mockLibsql() {
   const calls = [];
-  const rows = new Map();
-  const request = async (url, init) => {
-    const body = JSON.parse(String(init.body));
-    calls.push({ url, init, body });
-    const queries = body.batch || [body];
-    const result = queries.map((query) => {
-      if (query.sql.startsWith("INSERT INTO vercel_artifacts")) rows.set(query.params[0], query.params.slice(1));
-      const artifact = query.sql.startsWith("SELECT content_base64") ? rows.get(query.params[0]) : null;
-      const results = artifact ? [{ content_base64: artifact[0], content_type: artifact[1], custom_metadata: artifact[2] }] : query.sql.startsWith("SELECT") ? [{ id: "row_1", score: 97 }] : [];
-      return { success: true, results, meta: { changes: query.sql.startsWith("SELECT") ? 0 : 1, last_row_id: 7 } };
-    });
-    return new Response(JSON.stringify({ success: true, result }), { status: 200, headers: { "content-type": "application/json" } });
+  const artifacts = new Map();
+  let config;
+
+  const client = {
+    async execute(statement) {
+      const { sql, args = [] } = statement;
+      calls.push({ sql, args });
+      if (sql.startsWith("INSERT INTO vercel_artifacts")) {
+        artifacts.set(args[0], args.slice(1));
+        return result([], [], 1, 7n);
+      }
+      if (sql.startsWith("SELECT content_base64")) {
+        const artifact = artifacts.get(args[0]);
+        return artifact ? result(["content_base64", "content_type", "custom_metadata"], [artifact.slice(0, 3)]) : result(["content_base64", "content_type", "custom_metadata"]);
+      }
+      if (sql.startsWith("SELECT")) return result(["id", "score"], [["row_1", 97]]);
+      return result([], [], 1, 7n);
+    },
+    async batch(statements) {
+      return await Promise.all(statements.map((statement) => client.execute(statement)));
+    },
   };
-  return { calls, request };
+
+  return {
+    calls,
+    factory(value) { config = value; return client; },
+    get config() { return config; },
+  };
 }
 
 test("Vercel runtime fails closed when durable storage is missing", () => {
-  assert.throws(() => vercelRuntimeEnv({ VERCEL: "1" }, async () => new Response()), /VERCEL_STORAGE_NOT_CONFIGURED/);
+  assert.throws(() => vercelRuntimeEnv({ VERCEL: "1" }), /VERCEL_STORAGE_NOT_CONFIGURED/);
 });
 
-test("Vercel runtime maps D1 statements, batches, and artifacts to the Cloudflare API", async () => {
-  const mock = mockD1();
-  const env = vercelRuntimeEnv({ VERCEL: "1", CLOUDFLARE_ACCOUNT_ID: "account", CLOUDFLARE_D1_DATABASE_ID: "database", CLOUDFLARE_D1_API_TOKEN: "secret" }, mock.request);
+test("Vercel runtime maps SQLite statements, batches, and artifacts to Turso", async () => {
+  const mock = mockLibsql();
+  const env = vercelRuntimeEnv({ VERCEL: "1", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret" }, mock.factory);
   const first = await env.DB.prepare("SELECT id, score FROM checks WHERE id = ?").bind("row_1").first();
   assert.deepEqual(first, { id: "row_1", score: 97 });
-  const batch = await env.DB.batch([env.DB.prepare("UPDATE checks SET score = ? WHERE id = ?").bind(98, "row_1"), env.DB.prepare("DELETE FROM checks WHERE id = ?").bind("row_2")]);
+  const batch = await env.DB.batch([
+    env.DB.prepare("UPDATE checks SET score = ? WHERE id = ?").bind(98, "row_1"),
+    env.DB.prepare("DELETE FROM checks WHERE id = ?").bind("row_2"),
+  ]);
   assert.equal(batch.length, 2);
-  assert.equal(mock.calls[0].init.headers.authorization, "Bearer secret");
-  assert.match(mock.calls[0].url, /accounts\/account\/d1\/database\/database\/query$/);
-  assert.deepEqual(mock.calls[1].body.batch[0].params, [98, "row_1"]);
+  assert.deepEqual(mock.config, { url: "libsql://worldmodel.turso.io", authToken: "secret", intMode: "number" });
+  assert.deepEqual(mock.calls[0].args, ["row_1"]);
+  assert.deepEqual(mock.calls[1].args, [98, "row_1"]);
+  assert.equal(env.VERCEL_STORAGE_PROVIDER, "turso");
+
   await env.ARTIFACTS.put("reports/demo.json", "{\"verified\":true}", { httpMetadata: { contentType: "application/json" }, customMetadata: { redacted: "true" } });
   const artifact = await env.ARTIFACTS.get("reports/demo.json");
   assert.equal(await artifact.text(), "{\"verified\":true}");
@@ -42,43 +65,59 @@ test("Vercel runtime maps D1 statements, batches, and artifacts to the Cloudflar
   assert.equal(artifact.customMetadata.redacted, "true");
 });
 
-test("Vercel runtime reports D1 API errors without exposing the token", async () => {
-  const env = vercelRuntimeEnv({ VERCEL: "1", CLOUDFLARE_ACCOUNT_ID: "account", CLOUDFLARE_D1_DATABASE_ID: "database", CLOUDFLARE_D1_API_TOKEN: "do-not-leak" }, async () => new Response(JSON.stringify({ success: false, errors: [{ message: "permission denied" }] }), { status: 403 }));
+test("Vercel runtime reports libSQL errors without exposing the token", async () => {
+  const factory = () => ({
+    async execute() { throw new Error("permission denied for do-not-leak"); },
+    async batch() { throw new Error("permission denied for do-not-leak"); },
+  });
+  const env = vercelRuntimeEnv({ VERCEL: "1", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "do-not-leak" }, factory);
   await assert.rejects(() => env.DB.prepare("SELECT 1").first(), (error) => error.message.includes("permission denied") && !error.message.includes("do-not-leak"));
 });
 
-test("production runtime selects the Vercel adapter instead of Cloudflare Worker bindings", async () => {
-  const previous = { VERCEL: process.env.VERCEL, account: process.env.CLOUDFLARE_ACCOUNT_ID, database: process.env.CLOUDFLARE_D1_DATABASE_ID, token: process.env.CLOUDFLARE_D1_API_TOKEN, local: process.env.WORLDMODEL_LOCAL_RUNTIME };
+test("production runtime selects the Turso-backed Vercel adapter", async () => {
+  const previous = {
+    VERCEL: process.env.VERCEL,
+    url: process.env.TURSO_DATABASE_URL,
+    token: process.env.TURSO_AUTH_TOKEN,
+    local: process.env.WORLDMODEL_LOCAL_RUNTIME,
+  };
   process.env.VERCEL = "1";
-  process.env.CLOUDFLARE_ACCOUNT_ID = "account";
-  process.env.CLOUDFLARE_D1_DATABASE_ID = "database";
-  process.env.CLOUDFLARE_D1_API_TOKEN = "secret";
+  process.env.TURSO_DATABASE_URL = "libsql://worldmodel.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "secret";
   delete process.env.WORLDMODEL_LOCAL_RUNTIME;
   try {
     const { getRuntimeEnv } = await import("../server/runtime-env.ts");
     const env = await getRuntimeEnv();
     assert.equal(env.VERCEL_RUNTIME, "true");
+    assert.equal(env.VERCEL_STORAGE_PROVIDER, "turso");
     assert.equal(typeof env.DB.prepare, "function");
   } finally {
     if (previous.VERCEL === undefined) delete process.env.VERCEL; else process.env.VERCEL = previous.VERCEL;
-    if (previous.account === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID; else process.env.CLOUDFLARE_ACCOUNT_ID = previous.account;
-    if (previous.database === undefined) delete process.env.CLOUDFLARE_D1_DATABASE_ID; else process.env.CLOUDFLARE_D1_DATABASE_ID = previous.database;
-    if (previous.token === undefined) delete process.env.CLOUDFLARE_D1_API_TOKEN; else process.env.CLOUDFLARE_D1_API_TOKEN = previous.token;
+    if (previous.url === undefined) delete process.env.TURSO_DATABASE_URL; else process.env.TURSO_DATABASE_URL = previous.url;
+    if (previous.token === undefined) delete process.env.TURSO_AUTH_TOKEN; else process.env.TURSO_AUTH_TOKEN = previous.token;
     if (previous.local === undefined) delete process.env.WORLDMODEL_LOCAL_RUNTIME; else process.env.WORLDMODEL_LOCAL_RUNTIME = previous.local;
   }
 });
 
-test("Vercel build preflight warns about missing durable storage without printing secrets", () => {
-  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", CLOUDFLARE_D1_API_TOKEN: "never-print-this", CLOUDFLARE_ACCOUNT_ID: "", CLOUDFLARE_D1_DATABASE_ID: "", WORLDMODEL_PUBLIC_ORIGIN: "" } });
+test("Vercel build preflight warns about missing Turso storage without printing secrets", () => {
+  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", TURSO_DATABASE_URL: "", TURSO_AUTH_TOKEN: "never-print-this", WORLDMODEL_PUBLIC_ORIGIN: "" },
+  });
   assert.equal(result.status, 0);
-  assert.match(result.stderr, /CLOUDFLARE_ACCOUNT_ID/);
+  assert.match(result.stderr, /TURSO_DATABASE_URL/);
   assert.match(result.stderr, /build will continue/i);
   assert.match(result.stderr, /WORLDMODEL_PUBLIC_ORIGIN/);
   assert.doesNotMatch(result.stderr, /never-print-this/);
 });
 
-test("Vercel build preflight accepts complete production storage configuration", () => {
-  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", CLOUDFLARE_D1_API_TOKEN: "secret", CLOUDFLARE_ACCOUNT_ID: "account", CLOUDFLARE_D1_DATABASE_ID: "database", WORLDMODEL_PUBLIC_ORIGIN: "https://worldmodel.example" } });
+test("Vercel build preflight accepts complete production Turso configuration", () => {
+  const result = spawnSync(process.execPath, ["scripts/check-vercel-env.mjs"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, VERCEL: "1", VERCEL_ENV: "production", TURSO_DATABASE_URL: "libsql://worldmodel.turso.io", TURSO_AUTH_TOKEN: "secret", WORLDMODEL_PUBLIC_ORIGIN: "https://worldmodel.example" },
+  });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /storage preflight passed/);
 });

@@ -67,7 +67,7 @@ Validate with `npm test`, `npm run lint`, and `npm run typecheck:worker`.
 
 ## Vercel deployment
 
-Vercel uses the native Next.js build and a server-only Cloudflare D1 REST
+Vercel uses the native Next.js build and a server-only Turso/libSQL database
 adapter; it never uses temporary function storage for customer data. Follow
 the required storage, environment, callback, execution-boundary, and smoke-test
 steps in [`docs/VERCEL.md`](docs/VERCEL.md) before promoting a deployment.
